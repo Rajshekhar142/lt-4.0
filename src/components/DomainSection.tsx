@@ -7,9 +7,10 @@ import TaskItem from "./TaskItem";
 interface DomainSectionProps {
   domain: any;
   tasks: any[];
+  isLocked: boolean;
 }
 
-export default function DomainSection({ domain, tasks }: DomainSectionProps) {
+export default function DomainSection({ domain, tasks, isLocked }: DomainSectionProps) {
   const [isOpen, setIsOpen] = useState(false);
 
   const doneCount = tasks.filter(t => t.isCompleted).length;
@@ -60,6 +61,7 @@ export default function DomainSection({ domain, tasks }: DomainSectionProps) {
                 points={task.points}
                 color={domain.color}
                 isCompleted={task.isCompleted}
+                isLocked={isLocked}
               />
             ))}
             

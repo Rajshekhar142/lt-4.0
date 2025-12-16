@@ -50,7 +50,7 @@ export default async function Home() {
       <div className="p-4 space-y-4"> {/* Reduced padding from p-5 to p-4 for better fit */}
         {domains.map((domain: any) => {
           const domainTasks = tasks.filter((t: any) => t.domainId === domain._id);
-          return <DomainSection key={domain._id} domain={domain} tasks={domainTasks} />;
+          return <DomainSection key={domain._id} domain={domain} tasks={domainTasks} isLocked={isLocked}/>;
         })}
       </div>
 

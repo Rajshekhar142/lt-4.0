@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import connectDB from "@/lib/db";
-import { Domain, Task, TaskLog, GameSettings } from "@/models/Core";
+import { Domain, Task, TaskLog, GameSettings, DailyHistory } from "@/models/Core"; // Consolidated imports
 import { BADGES } from "@/lib/badgeRules";
 
 // --- HELPER: Calculate Streak ---
@@ -44,8 +44,46 @@ function calculateStreak(logs: any[]) {
 export async function getData() {
   await connectDB();
   const today = new Date().toISOString().split("T")[0]; 
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0];
 
-  const [domains, tasks, logs, settings] = await Promise.all([
+  // 1. Game Settings Check
+  let settings = await GameSettings.findOne({ userEmail: "me" });
+  
+  if (!settings) {
+    settings = await GameSettings.create({ userEmail: "me", isLocked: false, lockDate: today });
+  }
+
+  // 2. DAILY RESET & HISTORY SNAPSHOT LOGIC
+  // Check if we already have history for yesterday. If not, snapshot it.
+  const historyExists = await DailyHistory.findOne({ dateString: yesterday });
+  
+  if (!historyExists) {
+    // Calculate Yesterday's Score
+    const yesterdayLogs = await TaskLog.find({ dateString: yesterday }).lean();
+    const points = yesterdayLogs.reduce((acc: number, l: any) => acc + l.pointsEarned, 0);
+    const count = yesterdayLogs.length;
+
+    // Save to History (only if there was activity to save space, or save 0s if you prefer)
+    if (count > 0) {
+      await DailyHistory.create({
+        userEmail: "me",
+        dateString: yesterday,
+        totalPoints: points,
+        tasksCompleted: count
+      });
+    }
+    
+    // Automatic Unlock on new day
+    // If the DB says we are locked on an OLD date, unlock it for today.
+    if (settings.lockDate !== today) {
+        settings.isLocked = false;
+        settings.lockDate = today;
+        await settings.save();
+    }
+  }
+
+  // 3. Fetch Active Data
+  const [domains, tasks, logs, finalSettings] = await Promise.all([
     Domain.find({ isActive: true }).sort({ order: 1 }).lean(),
     Task.find({ isActive: true }).lean(),
     TaskLog.find({ dateString: today }).lean(),
@@ -53,7 +91,7 @@ export async function getData() {
   ]);
 
   // Check Lock Status
-  const isLocked = settings?.isLocked === true && settings?.lockDate === today;
+  const isLocked = finalSettings?.isLocked === true && finalSettings?.lockDate === today;
 
   // Transform Data
   const cleanTasks = tasks.map((t: any) => ({
@@ -82,14 +120,12 @@ export async function getLegacyData() {
     GameSettings.findOne({ userEmail: "me" })
   ]);
 
-  // If no settings yet, return defaults
   if (!settings) return { badges: [], streak: 0, earnedIds: [] };
 
   const currentStreak = calculateStreak(logs);
   const earnedBadgeIds = settings.earnedBadges || [];
   let newBadgesEarned = false;
 
-  // Check Logic for each badge
   for (const badge of BADGES) {
     if (earnedBadgeIds.includes(badge.id)) continue; 
 
@@ -116,7 +152,6 @@ export async function getLegacyData() {
     }
   }
 
-  // Save new badges if found
   if (newBadgesEarned) {
     settings.earnedBadges = earnedBadgeIds;
     await settings.save();
@@ -160,11 +195,11 @@ export async function addTask(text: string) {
 
   const domains = await Domain.find({ isActive: true }).lean();
   
-  // Parse Domain (Match against existing domain names)
+  // Parse Domain
   let targetDomain = domains.find((d: any) => lowerText.includes(d.name.toLowerCase()));
-  if (!targetDomain) targetDomain = domains[0]; // Default to first domain if not found
+  if (!targetDomain) targetDomain = domains[0]; 
 
-  // Clean Title (Remove points and domain words)
+  // Clean Title
   let cleanTitle = text
     .replace(new RegExp(`${points}\\s*(?:pt|point|pts)[s]?`, 'gi'), "") 
     .replace(new RegExp(targetDomain?.name || "", 'gi'), "") 
@@ -195,6 +230,19 @@ export async function toggleLock() {
     if (newLockState) settings.lockDate = today;
     await settings.save();
   }
+  
+  revalidatePath("/");
+}
+
+// NEW: Delete a Task (Hidden when locked)
+export async function deleteTask(taskId: string) {
+  await connectDB();
+  
+  // 1. Delete the Task definition
+  await Task.findByIdAndDelete(taskId);
+  
+  // 2. Delete all history/logs for this task (Cleanup)
+  await TaskLog.deleteMany({ taskId });
   
   revalidatePath("/");
 }

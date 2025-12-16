@@ -30,6 +30,15 @@ const GameSettingsSchema = new Schema({
   lockDate: { type: String }, // Which date is currently locked?
   earnedBadges: { type: [String], default: []}
 });
+// 5. Daily History (The Permanent Record)
+const DailyHistorySchema = new Schema({
+  userEmail: { type: String, required: true, index: true },
+  dateString: { type: String, required: true, unique: true }, // "2025-10-25"
+  totalPoints: { type: Number, required: true },
+  tasksCompleted: { type: Number, required: true },
+});
+
+export const DailyHistory = models.DailyHistory || model("DailyHistory", DailyHistorySchema);
 
 export const GameSettings = models.GameSettings || model("GameSettings", GameSettingsSchema);
 
