@@ -1,20 +1,22 @@
 import Link from "next/link";
-import { ArrowLeft, Lock, Coins, RotateCcw } from "lucide-react";
-import { getLegacyData, resetWallet } from "@/app/actions";
+import { ArrowLeft, Lock, Coins, RotateCcw } from "lucide-react"; 
+import { getLegacyData, resetWallet } from "@/app/actions"; 
 import { BADGES } from "@/lib/badgeRules";
 import { DailyHistory } from "@/models/Core";
 import connectDB from "@/lib/db";
 
+// FIX: Changed limit(30) to limit(7)
 async function getHistory() {
   await connectDB();
-  return DailyHistory.find({ userEmail: "me" }).sort({ dateString: -1 }).limit(30).lean();
+  return DailyHistory.find({ userEmail: "me" })
+    .sort({ dateString: -1 })
+    .limit(7) // <--- Only show the last week
+    .lean();
 }
 
 export default async function LegacyPage() {
   const { streak, earnedIds, wallet, badgeProgress } = await getLegacyData();
   const history = await getHistory();
-
-  // FIX: Explicitly tell TypeScript that this is a { "id": 50 } object
   const progressMap = badgeProgress as Record<string, number>;
 
   return (
@@ -65,10 +67,10 @@ export default async function LegacyPage() {
         </div>
       </div>
 
-      {/* 4. Past Performance */}
+      {/* 4. Past Performance (Last 7 Days) */}
       <div className="mb-10">
          <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider pl-1 mb-3">
-           Past Performance
+           Last 7 Days
          </h3>
          
          {history.length === 0 ? (
@@ -98,8 +100,6 @@ export default async function LegacyPage() {
           {BADGES.map((badge) => {
             const isUnlocked = earnedIds.includes(badge.id);
             const Icon = badge.icon;
-            
-            // FIX: Use the properly typed map here
             const progress = progressMap ? (progressMap[badge.id] || 0) : 0;
 
             return (
