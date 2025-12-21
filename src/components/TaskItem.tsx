@@ -2,7 +2,7 @@
 
 import { Circle, CheckCircle2, Trash2 } from "lucide-react";
 import { useTransition } from "react";
-import { toggleTask, deleteTask } from "@/app/actions"; // Import delete
+import { toggleTask, deleteTask } from "@/app/actions";
 
 interface TaskItemProps {
   id: string;
@@ -10,21 +10,25 @@ interface TaskItemProps {
   points: number;
   color: string;
   isCompleted: boolean;
-  isLocked: boolean; // NEW PROP
+  isLocked: boolean;
 }
 
 export default function TaskItem({ id, title, points, color, isCompleted, isLocked }: TaskItemProps) {
   let [isPending, startTransition] = useTransition();
 
   const handleToggle = () => {
-    if (isLocked) return; // Prevent toggling if locked? (Optional, usually we allow checking off, just not editing)
+    // FIX: Removed "if (isLocked) return;" 
+    // Now you can ALWAYS complete a task, even if the list is locked.
     startTransition(async () => {
       await toggleTask(id, points);
     });
   };
 
   const handleDelete = (e: React.MouseEvent) => {
-    e.stopPropagation(); // Don't trigger the toggle
+    e.stopPropagation();
+    // Delete is strictly forbidden when locked
+    if (isLocked) return; 
+    
     if (confirm("Delete this task?")) {
       startTransition(async () => {
         await deleteTask(id);
@@ -56,12 +60,11 @@ export default function TaskItem({ id, title, points, color, isCompleted, isLock
         </div>
       </div>
 
-      {/* DELETE BUTTON (Only visible if NOT locked) */}
+      {/* DELETE BUTTON (Hidden if Locked) */}
       {!isLocked && (
         <button 
           onClick={handleDelete}
           className="p-2 text-neutral-600 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
-          title="Delete Task"
         >
           <Trash2 size={18} />
         </button>
