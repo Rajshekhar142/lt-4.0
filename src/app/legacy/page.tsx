@@ -1,23 +1,45 @@
 import Link from "next/link";
-import { ArrowLeft, Lock, Coins, RotateCcw } from "lucide-react"; 
-import { getLegacyData, resetWallet } from "@/app/actions"; 
+import { ArrowLeft, Lock, Coins, RotateCcw } from "lucide-react";
+import { getLegacyData, resetWallet } from "@/app/actions";
 import { BADGES } from "@/lib/badgeRules";
 import { DailyHistory } from "@/models/Core";
 import connectDB from "@/lib/db";
 
-// FIX: Changed limit(30) to limit(7)
+// Fetch last 7 days (Newest First)
 async function getHistory() {
   await connectDB();
   return DailyHistory.find({ userEmail: "me" })
     .sort({ dateString: -1 })
-    .limit(7) // <--- Only show the last week
+    .limit(7)
     .lean();
 }
 
 export default async function LegacyPage() {
   const { streak, earnedIds, wallet, badgeProgress } = await getLegacyData();
-  const history = await getHistory();
+  const rawHistory = await getHistory();
   const progressMap = badgeProgress as Record<string, number>;
+
+  // PREPARE CHART DATA
+  // 1. Reverse to get chronological order (Oldest -> Newest)
+  const chartData = [...rawHistory].reverse();
+  
+  // 2. Find Max Value for scaling (min 10 to avoid flatline on 0)
+  const maxVal = Math.max(...chartData.map((d: any) => d.totalPoints), 10);
+  
+  // 3. Chart Dimensions
+  const height = 100;
+  const width = 100; // using percent-like coordinates
+  
+  // 4. Generate SVG Points
+  // We map the 7 days to x coordinates (0, 16.6, 33.3, ... 100)
+  const points = chartData.map((d: any, i: number) => {
+    const x = (i / (Math.max(chartData.length - 1, 1))) * width;
+    const y = height - (d.totalPoints / maxVal) * height; // Invert Y because SVG 0 is top
+    return `${x},${y}`;
+  }).join(" ");
+
+  // 5. Generate Fill Area (Line + corners down to bottom)
+  const fillPath = `${points} ${width},${height} 0,${height}`;
 
   return (
     <main className="min-h-screen bg-black text-white p-6 pb-20 w-full md:max-w-md md:mx-auto md:border-x border-neutral-800 overflow-x-hidden">
@@ -67,27 +89,81 @@ export default async function LegacyPage() {
         </div>
       </div>
 
-      {/* 4. Past Performance (Last 7 Days) */}
+      {/* 4. PERFORMANCE CHART (NEW) */}
       <div className="mb-10">
-         <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider pl-1 mb-3">
-           Last 7 Days
-         </h3>
-         
-         {history.length === 0 ? (
-           <div className="p-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 text-center">
-             <p className="text-neutral-500 text-sm">No history recorded yet.</p>
-           </div>
-         ) : (
-           <div className="grid grid-cols-2 gap-3">
-             {history.map((day: any) => (
-               <div key={day._id.toString()} className="bg-neutral-900/50 border border-neutral-800 p-4 rounded-2xl">
-                 <p className="text-xs text-neutral-500 font-bold uppercase mb-1">{day.dateString}</p>
-                 <p className="text-2xl font-black text-white">{day.totalPoints} <span className="text-xs font-medium text-neutral-400">pts</span></p>
-                 <p className="text-[10px] text-neutral-600 font-medium">{day.tasksCompleted} tasks done</p>
-               </div>
-             ))}
-           </div>
-         )}
+         <div className="flex justify-between items-end mb-4 px-2">
+            <h3 className="text-xs font-bold text-neutral-500 uppercase tracking-wider">
+              Last 7 Days
+            </h3>
+            {chartData.length > 0 && (
+                <span className="text-xs font-mono text-green-500">
+                    ▲ {chartData[chartData.length - 1].totalPoints} pts
+                </span>
+            )}
+         </div>
+
+         <div className="bg-neutral-900/30 border border-neutral-800 rounded-3xl p-6 h-48 relative overflow-hidden">
+             {chartData.length < 2 ? (
+                <div className="h-full flex items-center justify-center text-neutral-600 text-sm italic">
+                    Not enough data for chart
+                </div>
+             ) : (
+                <div className="w-full h-full relative">
+                    {/* SVG Container */}
+                    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full overflow-visible" preserveAspectRatio="none">
+                        
+                        {/* Gradient Definition */}
+                        <defs>
+                            <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor="#ea580c" stopOpacity="0.5" />
+                                <stop offset="100%" stopColor="#ea580c" stopOpacity="0" />
+                            </linearGradient>
+                        </defs>
+
+                        {/* Area Fill */}
+                        <polygon 
+                           points={fillPath} 
+                           fill="url(#chartGradient)" 
+                        />
+
+                        {/* The Line */}
+                        <polyline 
+                           points={points} 
+                           fill="none" 
+                           stroke="#ea580c" 
+                           strokeWidth="3" 
+                           vectorEffect="non-scaling-stroke"
+                           strokeLinecap="round"
+                           strokeLinejoin="round"
+                        />
+                        
+                        {/* Dots on points */}
+                        {chartData.map((d: any, i: number) => {
+                             const x = (i / (chartData.length - 1)) * width;
+                             const y = height - (d.totalPoints / maxVal) * height;
+                             return (
+                                <circle 
+                                    key={i} 
+                                    cx={x} 
+                                    cy={y} 
+                                    r="3" // Radius in svg units (small)
+                                    className="fill-white"
+                                    vectorEffect="non-scaling-stroke" // Keeps dot crisp
+                                />
+                             );
+                        })}
+
+                    </svg>
+
+                    {/* Simple Date Labels on X-Axis */}
+                    <div className="absolute bottom-0 left-0 w-full flex justify-between text-[10px] text-neutral-600 font-mono mt-2 transform translate-y-4">
+                        {chartData.map((d: any, i: number) => (
+                            <span key={i}>{d.dateString.slice(8)}</span> // Show only '25' from '2023-10-25'
+                        ))}
+                    </div>
+                </div>
+             )}
+         </div>
       </div>
 
       {/* 5. Achievements */}

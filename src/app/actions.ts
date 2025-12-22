@@ -1,16 +1,31 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+// NEW: Import unstable_noStore to kill the cache
+import { unstable_noStore as noStore } from "next/cache"; 
 import connectDB from "@/lib/db";
 import { Domain, Task, TaskLog, GameSettings, DailyHistory } from "@/models/Core";
 import { BADGES } from "@/lib/badgeRules";
+
+// --- HELPER: Global Date Source of Truth ---
+// This ensures we always use 5:30 AM IST (UTC Midnight) as the flip switch
+function getTodayDateString() {
+  // Returns "YYYY-MM-DD" based on UTC (which is 5:30 AM IST)
+  return new Date().toISOString().split("T")[0];
+}
+
+function getYesterdayDateString() {
+  const date = new Date();
+  date.setDate(date.getDate() - 1); // Subtract 24 hours
+  return date.toISOString().split("T")[0];
+}
 
 // --- HELPER: Calculate Streak ---
 function calculateStreak(logs: any[]) {
   if (!logs.length) return 0;
   const uniqueDates = Array.from(new Set(logs.map((l: any) => l.dateString))).sort().reverse();
-  const today = new Date().toISOString().split("T")[0];
-  const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0];
+  const today = getTodayDateString();
+  const yesterday = getYesterdayDateString();
 
   let streak = 0;
   let currentCheck = today;
@@ -31,10 +46,14 @@ function calculateStreak(logs: any[]) {
   return streak;
 }
 
-// --- MAIN: Fetch App Data (With Robust History Sync) ---
+// --- MAIN: Fetch App Data ---
 export async function getData() {
+  // CRITICAL: Forces this function to run fresh every time (Fixes the bug)
+  noStore(); 
+  
   await connectDB();
-  const today = new Date().toISOString().split("T")[0]; 
+  const today = getTodayDateString();
+  const yesterday = getYesterdayDateString();
 
   // 1. Ensure Settings Exist
   let settings = await GameSettings.findOne({ userEmail: "me" });
@@ -42,26 +61,22 @@ export async function getData() {
     settings = await GameSettings.create({ userEmail: "me", isLocked: false, lockDate: today });
   }
 
-  // 2. ROBUST HISTORY SYNC (The "Catch Up" Loop)
-  // Find the LAST recorded history date
+  // 2. HISTORY SYNC LOOP (Fixes "Missing Past Performance")
+  // We check from the last saved history up to yesterday.
   const lastHistory = await DailyHistory.findOne().sort({ dateString: -1 });
   
-  // If we have history, start checking from the day AFTER that. 
-  // If no history, start from 30 days ago (or start of time).
+  // Start checking from the day AFTER the last history, OR from 30 days ago if empty
   let checkDate = lastHistory 
     ? new Date(new Date(lastHistory.dateString).getTime() + 86400000) 
-    : new Date(Date.now() - (30 * 86400000)); // Default check last 30 days if empty
+    : new Date(Date.now() - (30 * 86400000));
 
   const now = new Date();
 
-  // Loop through every day from 'checkDate' until 'Yesterday'
-  while (checkDate < now) {
+  // Loop until we reach Today (exclusive)
+  while (checkDate.toISOString().split("T")[0] < today) {
     const dateStr = checkDate.toISOString().split("T")[0];
     
-    // Don't snapshot Today yet (it's still happening!)
-    if (dateStr === today) break;
-
-    // Check if we already have it (double safety)
+    // Check if history exists for this specific date
     const exists = await DailyHistory.findOne({ dateString: dateStr });
     
     if (!exists) {
@@ -70,13 +85,14 @@ export async function getData() {
       const points = logs.reduce((acc: number, l: any) => acc + l.pointsEarned, 0);
       const count = logs.length;
 
-      // Save History (Even if 0, so we know we checked it)
+      // Save History (Even if 0, so we have a record that the day passed)
       await DailyHistory.create({
         userEmail: "me",
         dateString: dateStr,
         totalPoints: points,
         tasksCompleted: count
       });
+      console.log(`[Auto-History] Saved snapshot for ${dateStr}`);
     }
     
     // Move to next day
@@ -94,7 +110,7 @@ export async function getData() {
   const [domains, tasks, logs, finalSettings] = await Promise.all([
     Domain.find({ isActive: true }).sort({ order: 1 }).lean(),
     Task.find({ isActive: true }).lean(),
-    TaskLog.find({ dateString: today }).lean(),
+    TaskLog.find({ dateString: today }).lean(), // Only fetch logs for TODAY
     GameSettings.findOne({ userEmail: "me" }).lean()
   ]);
 
@@ -117,6 +133,7 @@ export async function getData() {
 
 // --- LEGACY: Fetch Badges, Streak, Wallet & Progress ---
 export async function getLegacyData() {
+  noStore(); // Force fresh data here too
   await connectDB();
   
   const [logs, tasks, domains, settings] = await Promise.all([
@@ -132,7 +149,7 @@ export async function getLegacyData() {
   const earnedBadgeIds = settings.earnedBadges || [];
   let newBadgesEarned = false;
   
-  // NEW: Calculate Progress for every badge (locked or unlocked)
+  // Progress Calculation
   const badgeProgress: Record<string, number> = {};
 
   for (const badge of BADGES) {
@@ -156,10 +173,8 @@ export async function getLegacyData() {
       }
     }
 
-    // Save progress for UI (clamp at 100%)
     badgeProgress[badge.id] = Math.min(100, Math.round((progress / badge.threshold) * 100));
 
-    // Award Badge
     if (qualified && !earnedBadgeIds.includes(badge.id)) {
       earnedBadgeIds.push(badge.id);
       newBadgesEarned = true;
@@ -175,28 +190,28 @@ export async function getLegacyData() {
   return {
     streak: currentStreak,
     earnedIds: earnedBadgeIds,
-    wallet: settings.walletBalance || 0, // Return Wallet
-    badgeProgress // Return Progress Data
+    wallet: settings.walletBalance || 0,
+    badgeProgress
   };
 }
 
-// --- ACTION: Toggle Task (Updates Wallet) ---
+// ... (Keep toggleTask, resetWallet, addTask, toggleLock, deleteTask EXACTLY as they were) ...
+// Copy them from the previous version, they don't need changes.
+// Just make sure to import toggleTask etc at the bottom of the file if they were cut off.
 export async function toggleTask(taskId: string, points: number) {
   await connectDB();
-  const today = new Date().toISOString().split("T")[0];
+  const today = getTodayDateString(); // Use helper
 
   const existingLog = await TaskLog.findOne({ taskId, dateString: today });
   const settings = await GameSettings.findOne({ userEmail: "me" });
 
   if (existingLog) {
-    // UNDO: Remove log, Subtract money
     await TaskLog.findByIdAndDelete(existingLog._id);
     if (settings) {
        settings.walletBalance = Math.max(0, (settings.walletBalance || 0) - points);
        await settings.save();
     }
   } else {
-    // DO: Create log, Add money
     await TaskLog.create({ taskId, dateString: today, pointsEarned: points });
     if (settings) {
        settings.walletBalance = (settings.walletBalance || 0) + points;
@@ -206,14 +221,55 @@ export async function toggleTask(taskId: string, points: number) {
   revalidatePath("/");
 }
 
-// --- ACTION: Reset Wallet (Cash Out) ---
 export async function resetWallet() {
   await connectDB();
   await GameSettings.findOneAndUpdate({ userEmail: "me" }, { walletBalance: 0 });
   revalidatePath("/legacy");
 }
 
-// --- OTHER ACTIONS (Unchanged) ---
-export async function addTask(text: string) { /* ... same as before ... */ }
-export async function toggleLock() { /* ... same as before ... */ }
-export async function deleteTask(taskId: string) { /* ... same as before ... */ }
+export async function addTask(text: string) {
+  await connectDB();
+  const lowerText = text.toLowerCase();
+  const pointsMatch = lowerText.match(/(\d+)\s*(?:pt|point|pts)/);
+  const points = pointsMatch ? parseInt(pointsMatch[1]) : 1; 
+  const domains = await Domain.find({ isActive: true }).lean();
+  let targetDomain = domains.find((d: any) => lowerText.includes(d.name.toLowerCase()));
+  if (!targetDomain) targetDomain = domains[0]; 
+
+  let cleanTitle = text
+    .replace(new RegExp(`${points}\\s*(?:pt|point|pts)[s]?`, 'gi'), "") 
+    .replace(new RegExp(targetDomain?.name || "", 'gi'), "") 
+    .trim();
+
+  await Task.create({
+    domainId: targetDomain?._id,
+    title: cleanTitle || "New Task", 
+    points: points,
+    isActive: true
+  });
+  revalidatePath("/");
+  return { success: true };
+}
+
+export async function toggleLock() {
+  await connectDB();
+  const today = getTodayDateString(); // Use helper
+  let settings = await GameSettings.findOne({ userEmail: "me" });
+  
+  if (!settings) {
+    await GameSettings.create({ userEmail: "me", isLocked: true, lockDate: today });
+  } else {
+    const newLockState = !settings.isLocked;
+    settings.isLocked = newLockState;
+    if (newLockState) settings.lockDate = today;
+    await settings.save();
+  }
+  revalidatePath("/");
+}
+
+export async function deleteTask(taskId: string) {
+  await connectDB();
+  await Task.findByIdAndDelete(taskId);
+  await TaskLog.deleteMany({ taskId });
+  revalidatePath("/");
+}
