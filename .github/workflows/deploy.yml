@@ -16,6 +16,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Use npm 11.6.2
+        run: npm install -g npm@11.6.2
+
       - name: Install dependencies
         run: npm ci
 
@@ -36,5 +39,6 @@ jobs:
             cd ~/lifetracker
             git pull origin tdevops
             npm install
+            pm2 stop lifetracker
             npm run build
             pm2 restart lifetracker

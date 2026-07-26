@@ -20,6 +20,13 @@ declare global {
 const db = globalThis.__ltDb ?? new DatabaseSync(DB_PATH);
 if (process.env.NODE_ENV !== "production") globalThis.__ltDb = db;
 
+// WAL mode lets readers and a writer coexist instead of locking the whole
+// file on every write. busy_timeout makes SQLite retry for a bit instead of
+// immediately throwing "database is locked" when two processes (e.g. a
+// build running while the old server is still up) touch the file at once.
+db.exec("PRAGMA journal_mode = WAL;");
+db.exec("PRAGMA busy_timeout = 5000;");
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS domains (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,9 +46,9 @@ db.exec(`
 // Seed exactly 3 domains on first run. Edit this list to rename/re-theme
 // your domains — it only ever runs once (guarded by the count check).
 const DEFAULT_DOMAINS: { name: string; color: string }[] = [
-  { name: "Builder", color: "#ff8552" },
-  { name: "Learner", color: "#6c8ae4" },
-  { name: "Casual", color: "#4caf7d" },
+  { name: "Coding", color: "#ff8552" },
+  { name: "Chess", color: "#6c8ae4" },
+  { name: "Reading", color: "#4caf7d" },
 ];
 
 const countRow = db.prepare("SELECT COUNT(*) as c FROM domains").get() as
