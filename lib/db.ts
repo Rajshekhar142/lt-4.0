@@ -7,7 +7,12 @@ import fs from "fs";
 // deploy this app as one long-running service (Fly.io, Render, a VPS),
 // not as Vercel serverless functions.
 const DB_DIR = path.join(process.cwd(), "data");
-const DB_PATH = path.join(DB_DIR, "lifetracker.db");
+// Tests run with NODE_ENV=test (vitest sets this automatically) — point
+// them at a separate file so `npx vitest` can never wipe your real,
+// actually-tracked history in data/lifetracker.db.
+const DB_FILENAME =
+  process.env.NODE_ENV === "test" ? "lifetracker.test.db" : "lifetracker.db";
+const DB_PATH = path.join(DB_DIR, DB_FILENAME);
 
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
@@ -17,59 +22,108 @@ declare global {
   var __ltDb: DatabaseSync | undefined;
 }
 
-export const db = globalThis.__ltDb ?? new DatabaseSync(DB_PATH);
-if (process.env.NODE_ENV !== "production") globalThis.__ltDb = db;
+let _db: DatabaseSync | null = null;
 
-// WAL mode lets readers and a writer coexist instead of locking the whole
-// file on every write. busy_timeout makes SQLite retry for a bit instead of
-// immediately throwing "database is locked" when two processes (e.g. a
-// build running while the old server is still up) touch the file at once.
-db.exec("PRAGMA journal_mode = WAL;");
-db.exec("PRAGMA busy_timeout = 5000;");
+// Everything that used to run at module top level — opening the file,
+// PRAGMAs, CREATE TABLE, migrations, seeding — now only runs the first
+// time a real query actually happens. Next's build step imports every
+// route module to statically analyze it (even force-dynamic ones), which
+// used to open/lock the sqlite file just from being imported — this is
+// what caused "database is locked" build failures whenever a stale
+// connection or another process touched the file at the same moment.
+// Lazy init means merely importing this module is now a complete no-op
+// on disk; nothing happens until getDb() is actually invoked.
+function getDb(): DatabaseSync {
+  if (_db) return _db;
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS domains (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    color TEXT NOT NULL
+  const instance = globalThis.__ltDb ?? new DatabaseSync(DB_PATH);
+  if (process.env.NODE_ENV !== "production") globalThis.__ltDb = instance;
+
+  // WAL mode lets readers and a writer coexist instead of locking the
+  // whole file on every write. busy_timeout makes SQLite retry for a bit
+  // instead of immediately throwing "database is locked" if two
+  // processes ever do genuinely overlap.
+  instance.exec("PRAGMA journal_mode = WAL;");
+  instance.exec("PRAGMA busy_timeout = 5000;");
+
+  instance.exec(`
+    CREATE TABLE IF NOT EXISTS domains (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS time_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      domain_id INTEGER NOT NULL REFERENCES domains(id),
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      description TEXT,
+      duration_seconds INTEGER
+    );
+  `);
+
+  // --- Migrations ---
+  // CREATE TABLE IF NOT EXISTS is a no-op against a table that already
+  // exists — so on a production db created before `description` existed,
+  // the block above does nothing and the column is silently missing.
+  // This checks the *actual* on-disk schema and adds the column only if
+  // it's not already there. Existing rows are untouched; description just
+  // comes back NULL for anything logged before this shipped.
+  const timeEntriesColumns = instance
+    .prepare("PRAGMA table_info(time_entries)")
+    .all() as { name: string }[];
+
+  const hasDescription = timeEntriesColumns.some(
+    (col) => col.name === "description"
   );
 
-  CREATE TABLE IF NOT EXISTS time_entries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    domain_id INTEGER NOT NULL REFERENCES domains(id),
-    started_at TEXT NOT NULL,
-    ended_at TEXT,
-    description TEXT,
-    duration_seconds INTEGER
-  );
-`);
+  if (!hasDescription) {
+    instance.exec("ALTER TABLE time_entries ADD COLUMN description TEXT");
+  }
 
-// Seed exactly 3 domains on first run. Edit this list to rename/re-theme
-// your domains — it only ever runs once (guarded by the count check).
-const DEFAULT_DOMAINS: { name: string; color: string }[] = [
-  { name: "Coding", color: "#ff8552" },
-  { name: "Chess", color: "#6c8ae4" },
-  { name: "Reading", color: "#4caf7d" },
-];
+  // Seed exactly 3 domains on first run. Edit this list to rename/re-theme
+  // your domains — it only ever runs once (guarded by the count check).
+  const DEFAULT_DOMAINS: { name: string; color: string }[] = [
+    { name: "Coding", color: "#ff8552" },
+    { name: "Chess", color: "#6c8ae4" },
+    { name: "Reading", color: "#4caf7d" },
+  ];
 
-const countRow = db.prepare("SELECT COUNT(*) as c FROM domains").get() as
-  | { c: number }
-  | undefined;
+  const countRow = instance.prepare("SELECT COUNT(*) as c FROM domains").get() as
+    | { c: number }
+    | undefined;
 
-if (!countRow || countRow.c === 0) {
-  const insert = db.prepare(
-    "INSERT INTO domains (name, color) VALUES (?, ?)"
-  );
-  for (const d of DEFAULT_DOMAINS) insert.run(d.name, d.color);
+  if (!countRow || countRow.c === 0) {
+    const insert = instance.prepare(
+      "INSERT INTO domains (name, color) VALUES (?, ?)"
+    );
+    for (const d of DEFAULT_DOMAINS) insert.run(d.name, d.color);
+  }
+
+  _db = instance;
+  return _db;
 }
+
+// Proxy so `import { db } from './db'; db.prepare(...)` (used directly by
+// tests) keeps working unchanged — but the underlying connection/schema
+// setup only actually happens on first real property access, not at
+// import time. Importing this module is now always a no-op on disk.
+export const db = new Proxy({} as DatabaseSync, {
+  get(_target, prop, receiver) {
+    const real = getDb();
+    const value = Reflect.get(real, prop, real);
+    return typeof value === "function" ? value.bind(real) : value;
+  },
+});
 
 export type Domain = { id: number; name: string; color: string };
 export type TimeEntry = {
   id: number;
   domain_id: number;
-  description: string | null;
   started_at: string;
   ended_at: string | null;
+  description: string | null;
   duration_seconds: number | null;
 };
 
@@ -116,10 +170,14 @@ export function startEntry(domainId: number): TimeEntry {
   );
 }
 
-export function stopEntry(entryId: number, description: string = ''): TimeEntry {
+export function stopEntry(entryId: number, description: string = ""): TimeEntry {
   const entry = db
     .prepare("SELECT * FROM time_entries WHERE id = ?")
-    .get(entryId) as TimeEntry;
+    .get(entryId) as TimeEntry | undefined;
+
+  if (!entry) {
+    throw new Error(`stopEntry: no time_entries row with id ${entryId}`);
+  }
 
   const endedAt = new Date();
   const startedAt = new Date(entry.started_at);
@@ -130,7 +188,7 @@ export function stopEntry(entryId: number, description: string = ''): TimeEntry 
 
   db.prepare(
     "UPDATE time_entries SET ended_at = ?, duration_seconds = ?, description = ? WHERE id = ?"
-  ).run(endedAt.toISOString(), durationSeconds,description, entryId);
+  ).run(endedAt.toISOString(), durationSeconds, description, entryId);
 
   return toPlain(
     db.prepare("SELECT * FROM time_entries WHERE id = ?").get(entryId) as TimeEntry
