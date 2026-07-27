@@ -85,9 +85,9 @@ function getDb(): DatabaseSync {
   // Seed exactly 3 domains on first run. Edit this list to rename/re-theme
   // your domains — it only ever runs once (guarded by the count check).
   const DEFAULT_DOMAINS: { name: string; color: string }[] = [
-    { name: "Coding", color: "#ff8552" },
-    { name: "Chess", color: "#6c8ae4" },
-    { name: "Reading", color: "#4caf7d" },
+    { name: "Builder", color: "#ff8552" },
+    { name: "Learner", color: "#6c8ae4" },
+    { name: "Casual", color: "#4caf7d" },
   ];
 
   const countRow = instance.prepare("SELECT COUNT(*) as c FROM domains").get() as
