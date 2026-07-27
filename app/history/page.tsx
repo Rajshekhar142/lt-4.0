@@ -1,4 +1,5 @@
 import { getHistoryAction } from "@/lib/actions";
+import { requireUser } from "@/lib/auth";
 import { formatDuration, formatDayLabel } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -10,6 +11,8 @@ type DayGroup = {
 };
 
 export default async function HistoryPage() {
+  await requireUser();
+
   const entries = await getHistoryAction(30);
 
   const byDay = new Map<string, DayGroup>();
