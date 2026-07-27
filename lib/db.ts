@@ -17,7 +17,7 @@ declare global {
   var __ltDb: DatabaseSync | undefined;
 }
 
-const db = globalThis.__ltDb ?? new DatabaseSync(DB_PATH);
+export const db = globalThis.__ltDb ?? new DatabaseSync(DB_PATH);
 if (process.env.NODE_ENV !== "production") globalThis.__ltDb = db;
 
 // WAL mode lets readers and a writer coexist instead of locking the whole
@@ -39,6 +39,7 @@ db.exec(`
     domain_id INTEGER NOT NULL REFERENCES domains(id),
     started_at TEXT NOT NULL,
     ended_at TEXT,
+    description TEXT,
     duration_seconds INTEGER
   );
 `);
@@ -66,6 +67,7 @@ export type Domain = { id: number; name: string; color: string };
 export type TimeEntry = {
   id: number;
   domain_id: number;
+  description: string | null;
   started_at: string;
   ended_at: string | null;
   duration_seconds: number | null;
@@ -114,7 +116,7 @@ export function startEntry(domainId: number): TimeEntry {
   );
 }
 
-export function stopEntry(entryId: number): TimeEntry {
+export function stopEntry(entryId: number, description: string = ''): TimeEntry {
   const entry = db
     .prepare("SELECT * FROM time_entries WHERE id = ?")
     .get(entryId) as TimeEntry;
@@ -127,8 +129,8 @@ export function stopEntry(entryId: number): TimeEntry {
   );
 
   db.prepare(
-    "UPDATE time_entries SET ended_at = ?, duration_seconds = ? WHERE id = ?"
-  ).run(endedAt.toISOString(), durationSeconds, entryId);
+    "UPDATE time_entries SET ended_at = ?, duration_seconds = ?, description = ? WHERE id = ?"
+  ).run(endedAt.toISOString(), durationSeconds,description, entryId);
 
   return toPlain(
     db.prepare("SELECT * FROM time_entries WHERE id = ?").get(entryId) as TimeEntry

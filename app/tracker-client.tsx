@@ -20,6 +20,7 @@ export default function TrackerClient({
   const [todayTotals, setTodayTotals] = useState(initialTodayTotals);
   const [now, setNow] = useState(() => Date.now());
   const [isPending, startTransition] = useTransition();
+  const [description, setDescription] = useState<string>("");
 
   // Tick every second while a domain is running.
   useEffect(() => {
@@ -39,19 +40,22 @@ export default function TrackerClient({
   function handleToggle(domain: Domain) {
     startTransition(async () => {
       if (active && active.domain_id === domain.id) {
-        const stopped = await stopEntryAction(active.id);
+        const stopped = await stopEntryAction(active.id, description);
         setTodayTotals((prev) => ({
           ...prev,
           [domain.id]: (prev[domain.id] ?? 0) + (stopped.duration_seconds ?? 0),
         }));
         setActive(null);
+        setDescription(""); // Reset note field on stop
       } else {
         if (active) {
+          await stopEntryAction(active.id, description);
           setTodayTotals((prev) => ({
             ...prev,
             [active.domain_id]:
               (prev[active.domain_id] ?? 0) + Math.round(liveElapsed),
           }));
+          setDescription(""); // Reset note field when switching domain
         }
         const entry = await startEntryAction(domain.id);
         setActive({ ...entry, domain_name: domain.name });
@@ -60,9 +64,9 @@ export default function TrackerClient({
   }
 
   return (
-    <div className="space-y-12">
-      {/* Hero: the live readout is the one thing this page is for */}
-      <div className="text-center py-8">
+    <div className="space-y-8">
+      {/* Hero: Live readout & note input */}
+      <div className="text-center py-6">
         <div
           className="font-mono text-6xl sm:text-7xl tabular tracking-tight transition-colors"
           style={{ color: active ? activeDomain?.color : "var(--fg-faint)" }}
@@ -71,11 +75,26 @@ export default function TrackerClient({
         </div>
         <div className="mt-3 text-sm text-fg-muted">
           {active ? (
-            <>tracking <span className="text-fg">{active.domain_name}</span></>
+            <>
+              tracking <span className="text-fg">{active.domain_name}</span>
+            </>
           ) : (
             "nothing running"
           )}
         </div>
+
+        {/* Note input field visible while tracking */}
+        {active && (
+          <div className="mt-6 max-w-md mx-auto">
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder={`What are you working on in ${active.domain_name}?`}
+              className="w-full px-4 py-2 text-sm rounded-md border border-border bg-surface text-fg focus:outline-none focus:ring-1 focus:ring-fg-muted transition-colors"
+            />
+          </div>
+        )}
       </div>
 
       {/* Domain rows */}

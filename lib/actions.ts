@@ -18,8 +18,8 @@ export async function startEntryAction(domainId: number) {
   return entry;
 }
 
-export async function stopEntryAction(entryId: number) {
-  const entry = db.stopEntry(entryId);
+export async function stopEntryAction(entryId: number, description: string) {
+  const entry = db.stopEntry(entryId,description);
   revalidatePath("/");
   revalidatePath("/history");
   return entry;
