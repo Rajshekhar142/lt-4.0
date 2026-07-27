@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "path";
 import fs from "fs";
+import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
 
 // Single sqlite file, lives on disk. On serverless platforms without a
 // persistent filesystem this will NOT survive between invocations —
@@ -61,6 +62,19 @@ function getDb(): DatabaseSync {
       description TEXT,
       duration_seconds INTEGER
     );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      expires_at TEXT NOT NULL
+    );
   `);
 
   // --- Migrations ---
@@ -101,6 +115,31 @@ function getDb(): DatabaseSync {
     for (const d of DEFAULT_DOMAINS) insert.run(d.name, d.color);
   }
 
+  // Seed exactly one admin account from env vars, once. There is no
+  // signup route anywhere in the app — this is the only way a user ever
+  // gets created, so your real password never sits in source code or git
+  // history. Set ADMIN_EMAIL / ADMIN_PASSWORD before first boot; if
+  // they're unset, no account gets created and login stays impossible
+  // (fails safe, doesn't crash).
+  const userCountRow = instance.prepare("SELECT COUNT(*) as c FROM users").get() as
+    | { c: number }
+    | undefined;
+
+  if (!userCountRow || userCountRow.c === 0) {
+    const email = process.env.ADMIN_EMAIL;
+    const password = process.env.ADMIN_PASSWORD;
+
+    if (email && password) {
+      const salt = randomBytes(16).toString("hex");
+      const hash = scryptSync(password, salt, 64).toString("hex");
+      instance
+        .prepare(
+          "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)"
+        )
+        .run(email, `${salt}:${hash}`, new Date().toISOString());
+    }
+  }
+
   _db = instance;
   return _db;
 }
@@ -118,6 +157,8 @@ export const db = new Proxy({} as DatabaseSync, {
 });
 
 export type Domain = { id: number; name: string; color: string };
+export type User = { id: number; email: string; password_hash: string; created_at: string };
+export type Session = { token: string; user_id: number; expires_at: string };
 export type TimeEntry = {
   id: number;
   domain_id: number;
@@ -137,6 +178,62 @@ function toPlain<T>(value: T): T {
 export function getDomains(): Domain[] {
   const rows = db.prepare("SELECT * FROM domains ORDER BY id").all() as Domain[];
   return toPlain(rows);
+}
+
+// --- Auth ---
+// No signup route exists — this whole section only ever touches the one
+// account seeded from ADMIN_EMAIL/ADMIN_PASSWORD above. "Multi-user
+// capable" means the schema doesn't assume a single hardcoded user id
+// anywhere, so a second account could be added by hand later without a
+// schema change — not that anyone can create one through the UI today.
+
+const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+export function verifyPassword(email: string, password: string): User | null {
+  const user = db
+    .prepare("SELECT * FROM users WHERE email = ?")
+    .get(email) as User | undefined;
+
+  if (!user) return null;
+
+  const [salt, storedHash] = user.password_hash.split(":");
+  const attemptHash = scryptSync(password, salt, 64).toString("hex");
+
+  // timingSafeEqual avoids leaking *how much* of the hash matched via
+  // response-time differences — a plain === comparison here would be a
+  // real (if minor) timing side-channel on a login endpoint.
+  const a = Buffer.from(attemptHash, "hex");
+  const b = Buffer.from(storedHash, "hex");
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+
+  return toPlain(user);
+}
+
+export function createSession(userId: number): string {
+  const token = randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + SESSION_DURATION_MS).toISOString();
+
+  db.prepare(
+    "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)"
+  ).run(token, userId, expiresAt);
+
+  return token;
+}
+
+export function getSessionUser(token: string): User | null {
+  const row = db
+    .prepare(
+      `SELECT u.* FROM sessions s
+       JOIN users u ON u.id = s.user_id
+       WHERE s.token = ? AND s.expires_at > ?`
+    )
+    .get(token, new Date().toISOString()) as User | undefined;
+
+  return row ? toPlain(row) : null;
+}
+
+export function deleteSession(token: string): void {
+  db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
 }
 
 export function getActiveEntry(): (TimeEntry & { domain_name: string }) | null {
