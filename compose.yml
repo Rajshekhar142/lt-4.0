@@ -1,0 +1,19 @@
+
+services:
+  app-blue:
+    image: my-next-app:latest
+    container_name: next-app-blue
+    restart: always
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      - PORT=3000
+
+  app-green:
+    image: my-next-app:latest
+    container_name: next-app-green
+    restart: always
+    ports:
+      - "127.0.0.1:3002:3000"
+    environment:
+      - PORT=3000
