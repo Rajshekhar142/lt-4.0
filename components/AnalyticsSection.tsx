@@ -20,36 +20,36 @@ function DeltaBadge({ pct, label }: { pct: number | null; label: string }) {
 }
 
 export default function AnalyticsSection({ analytics }: { analytics: Analytics }) {
-  const hasAnyYesterday = analytics.yesterday_total > 0;
+  const hasAnyToday = analytics.today_total > 0;
 
   return (
     <div className="mb-10 pb-8 border-b border-border">
-      <h2 className="text-sm text-fg-muted mb-4">Yesterday vs. your recent pace</h2>
+      <h2 className="text-sm text-fg-muted mb-4">Today vs. your recent pace</h2>
 
-      {!hasAnyYesterday ? (
-        <p className="text-sm text-fg-faint">Nothing tracked yesterday.</p>
+      {!hasAnyToday ? (
+        <p className="text-sm text-fg-faint">Nothing tracked today yet.</p>
       ) : (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium">Total</span>
             <span className="flex items-center gap-4 text-sm">
               <span className="font-mono tabular">
-                {formatDuration(analytics.yesterday_total)}
+                {formatDuration(analytics.today_total)}
               </span>
               <DeltaBadge
                 pct={
-                  analytics.day_before_total > 0
-                    ? ((analytics.yesterday_total - analytics.day_before_total) /
-                        analytics.day_before_total) *
+                  analytics.yesterday_total > 0
+                    ? ((analytics.today_total - analytics.yesterday_total) /
+                        analytics.yesterday_total) *
                       100
                     : null
                 }
-                label="vs day before"
+                label="vs yesterday"
               />
               <DeltaBadge
                 pct={
                   analytics.trailing_avg_total > 0
-                    ? ((analytics.yesterday_total - analytics.trailing_avg_total) /
+                    ? ((analytics.today_total - analytics.trailing_avg_total) /
                         analytics.trailing_avg_total) *
                       100
                     : null
@@ -60,7 +60,7 @@ export default function AnalyticsSection({ analytics }: { analytics: Analytics }
           </div>
 
           {analytics.domains
-            .filter((d) => d.yesterday_seconds > 0)
+            .filter((d) => d.today_seconds > 0)
             .map((d) => (
               <div key={d.domain_id} className="flex items-center justify-between">
                 <span className="flex items-center gap-2 text-sm text-fg-muted">
@@ -72,9 +72,9 @@ export default function AnalyticsSection({ analytics }: { analytics: Analytics }
                 </span>
                 <span className="flex items-center gap-4 text-sm">
                   <span className="font-mono tabular text-fg-muted">
-                    {formatDuration(d.yesterday_seconds)}
+                    {formatDuration(d.today_seconds)}
                   </span>
-                  <DeltaBadge pct={d.vs_previous_day_pct} label="vs day before" />
+                  <DeltaBadge pct={d.vs_yesterday_pct} label="vs yesterday" />
                   <DeltaBadge pct={d.vs_trailing_avg_pct} label="vs 7-day avg" />
                 </span>
               </div>

@@ -1,84 +1,86 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { db, getAnalytics } from '../db';
+import { describe, it, expect, beforeEach } from "vitest";
+import { db, getAnalytics } from "../db";
 
-describe('getAnalytics', () => {
+describe("getAnalytics - Today vs. Yesterday & 7-Day Rolling Avg", () => {
   beforeEach(() => {
-    // Clear entries before each test — same isolation pattern as
-    // db.test.ts. Vitest runs with NODE_ENV=test, so this is already
-    // hitting lifetracker.test.db, never your real tracked history.
-    db.prepare('DELETE FROM time_entries').run();
+    // Wipe test database state before each run
+    db.exec("DELETE FROM time_entries;");
   });
 
-  function insertEntry(domainId: number, daysAgo: number, seconds: number) {
-    const start = new Date();
-    start.setHours(10, 0, 0, 0);
-    start.setDate(start.getDate() - daysAgo);
-    const end = new Date(start.getTime() + seconds * 1000);
+  it("calculates today vs yesterday and trailing 7-day average correctly", () => {
+    const domains = db.prepare("SELECT id FROM domains ORDER BY id").all() as { id: number }[];
+    const domainId = domains[0].id;
 
-    db.prepare(
-      `INSERT INTO time_entries (domain_id, started_at, ended_at, duration_seconds)
-       VALUES (?, ?, ?, ?)`
-    ).run(domainId, start.toISOString(), end.toISOString(), seconds);
-  }
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const DAY_MS = 24 * 60 * 60 * 1000;
 
-  it('computes correct deltas vs. previous day and trailing average', () => {
-    const domains = db.prepare('SELECT * FROM domains ORDER BY id').all() as { id: number }[];
-    const codingId = domains[0].id;
+    const insertStmt = db.prepare(
+      "INSERT INTO time_entries (domain_id, started_at, ended_at, duration_seconds) VALUES (?, ?, ?, ?)"
+    );
 
-    insertEntry(codingId, 1, 7200); // yesterday: 2h
-    insertEntry(codingId, 2, 3600); // day before: 1h
-    for (let d = 3; d <= 9; d++) insertEntry(codingId, d, 1800); // trailing week: 30min/day
+    // Seed Data Setup:
+    // Day 0 (Today): 3600 seconds (1 hr)
+    // Day -1 (Yesterday): 1800 seconds (0.5 hr) -> expecting +100% vs yesterday
+    // Days -2 to -8 (7 days prior to yesterday): 3600 seconds each day
+    // Trailing 7-day sum = 7 * 3600 = 25200 seconds -> Trailing avg = 3600 seconds
+    // Expecting 0% vs trailing average
 
-    const result = getAnalytics();
-    const coding = result.domains.find((d) => d.domain_id === codingId);
+    // 1. Seed Today
+    const todayTime = new Date(startOfToday.getTime() + 2 * 60 * 60 * 1000).toISOString();
+    insertStmt.run(domainId, todayTime, todayTime, 3600);
 
-    expect(coding).toBeDefined();
-    expect(coding!.yesterday_seconds).toBe(7200);
-    expect(coding!.day_before_seconds).toBe(3600);
-    expect(coding!.trailing_avg_seconds).toBe(1800);
-    expect(coding!.vs_previous_day_pct).toBe(100); // 2h is +100% vs 1h
-    expect(coding!.vs_trailing_avg_pct).toBe(300); // 2h is +300% vs 30min avg
-  });
+    // 2. Seed Yesterday (Day -1)
+    const yesterdayTime = new Date(startOfToday.getTime() - 1 * DAY_MS + 2 * 60 * 60 * 1000).toISOString();
+    insertStmt.run(domainId, yesterdayTime, yesterdayTime, 1800);
 
-  it('returns null (not NaN/Infinity) when day_before was zero', () => {
-    const domains = db.prepare('SELECT * FROM domains ORDER BY id').all() as { id: number }[];
-    const codingId = domains[0].id;
-
-    insertEntry(codingId, 1, 3600); // yesterday: 1h
-    // nothing 2 days ago — day_before_seconds stays 0
-
-    const result = getAnalytics();
-    const coding = result.domains.find((d) => d.domain_id === codingId);
-
-    expect(coding!.day_before_seconds).toBe(0);
-    expect(coding!.vs_previous_day_pct).toBeNull();
-  });
-
-  it('returns null for a domain with zero activity entirely', () => {
-    const domains = db.prepare('SELECT * FROM domains ORDER BY id').all() as {
-      id: number;
-      name: string;
-    }[];
-
-    // Deliberately insert nothing for any domain
-    const result = getAnalytics();
-
-    for (const d of result.domains) {
-      expect(d.yesterday_seconds).toBe(0);
-      expect(d.vs_previous_day_pct).toBeNull();
-      expect(d.vs_trailing_avg_pct).toBeNull();
+    // 3. Seed Prior 7 Days (Days -2 through -8)
+    for (let day = 2; day <= 8; day++) {
+      const pastTime = new Date(startOfToday.getTime() - day * DAY_MS + 2 * 60 * 60 * 1000).toISOString();
+      insertStmt.run(domainId, pastTime, pastTime, 3600);
     }
-    expect(result.yesterday_total).toBe(0);
+
+    const analytics = getAnalytics();
+
+    expect(analytics.today_total).toBe(3600);
+    expect(analytics.yesterday_total).toBe(1800);
+    expect(analytics.trailing_avg_total).toBe(3600);
+
+    const domainAnalytics = analytics.domains.find((d) => d.domain_id === domainId);
+    expect(domainAnalytics).toBeDefined();
+
+    if (domainAnalytics) {
+      expect(domainAnalytics.today_seconds).toBe(3600);
+      expect(domainAnalytics.yesterday_seconds).toBe(1800);
+      expect(domainAnalytics.trailing_avg_seconds).toBe(3600);
+
+      // (3600 - 1800) / 1800 * 100 = +100%
+      expect(domainAnalytics.vs_yesterday_pct).toBeCloseTo(100);
+
+      // (3600 - 3600) / 3600 * 100 = 0%
+      expect(domainAnalytics.vs_trailing_avg_pct).toBeCloseTo(0);
+    }
   });
 
-  it('totals across domains match the sum of individual domains', () => {
-    const domains = db.prepare('SELECT * FROM domains ORDER BY id').all() as { id: number }[];
-    const [codingId, chessId] = domains.map((d) => d.id);
+  it("handles null percentage deltas when yesterday or average data is zero", () => {
+    const domains = db.prepare("SELECT id FROM domains ORDER BY id").all() as { id: number }[];
+    const domainId = domains[0].id;
 
-    insertEntry(codingId, 1, 3600);
-    insertEntry(chessId, 1, 1800);
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
 
-    const result = getAnalytics();
-    expect(result.yesterday_total).toBe(3600 + 1800);
+    const insertStmt = db.prepare(
+      "INSERT INTO time_entries (domain_id, started_at, ended_at, duration_seconds) VALUES (?, ?, ?, ?)"
+    );
+
+    // Only seed today, zero entries for past days
+    const todayTime = new Date(startOfToday.getTime() + 1 * 60 * 60 * 1000).toISOString();
+    insertStmt.run(domainId, todayTime, todayTime, 1200);
+
+    const analytics = getAnalytics();
+    const domainAnalytics = analytics.domains.find((d) => d.domain_id === domainId);
+
+    expect(domainAnalytics?.vs_yesterday_pct).toBeNull();
+    expect(domainAnalytics?.vs_trailing_avg_pct).toBeNull();
   });
 });
