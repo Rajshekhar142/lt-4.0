@@ -49,3 +49,6 @@ data/*.db-shm
 *.tfstate.backup
 *.tfvars
 .terraform.lock.hcl
+
+# seed scripts:
+.scripts/
