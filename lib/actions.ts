@@ -73,3 +73,7 @@ export async function getHistoryAction(days: number = 30) {
 export async function getTodayTotalsAction() {
   return db.getTodayTotals();
 }
+
+export async function getAnalyticsAction() {
+  return db.getAnalytics();
+}

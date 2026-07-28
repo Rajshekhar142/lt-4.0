@@ -99,9 +99,9 @@ function getDb(): DatabaseSync {
   // Seed exactly 3 domains on first run. Edit this list to rename/re-theme
   // your domains — it only ever runs once (guarded by the count check).
   const DEFAULT_DOMAINS: { name: string; color: string }[] = [
-    { name: "Builder", color: "#ff8552" },
-    { name: "Learner", color: "#6c8ae4" },
-    { name: "Casual", color: "#4caf7d" },
+    { name: "Coding", color: "#ff8552" },
+    { name: "Chess", color: "#6c8ae4" },
+    { name: "Reading", color: "#4caf7d" },
   ];
 
   const countRow = instance.prepare("SELECT COUNT(*) as c FROM domains").get() as
@@ -310,6 +310,123 @@ export function getTodayTotals(): Record<number, number> {
   const totals: Record<number, number> = {};
   for (const r of rows) totals[r.domain_id] = r.total;
   return totals;
+}
+
+export type DomainAnalytics = {
+  domain_id: number;
+  domain_name: string;
+  domain_color: string;
+  yesterday_seconds: number;
+  day_before_seconds: number;
+  trailing_avg_seconds: number;
+  // null when there's nothing meaningful to divide by (e.g. day_before
+  // was 0) — showing "+infinity%" or "0%" in that case would be noise,
+  // not signal, so the UI should just skip the comparison entirely.
+  vs_previous_day_pct: number | null;
+  vs_trailing_avg_pct: number | null;
+};
+
+export type Analytics = {
+  domains: DomainAnalytics[];
+  yesterday_total: number;
+  day_before_total: number;
+  trailing_avg_total: number;
+};
+
+// "Yesterday vs the day before" alone is noisy — a single arbitrary prior
+// day tells you little (what if THAT day was unusually slow?). Pairing it
+// with "yesterday vs your trailing 7-day average" (the 7 days ending the
+// day before that comparison day, so it never includes yesterday itself)
+// gives a baseline that says whether yesterday was actually good or bad
+// relative to your normal pace, not just relative to one data point.
+export function getAnalytics(): Analytics {
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const yesterdayStart = new Date(startOfToday.getTime() - 1 * DAY_MS);
+  const dayBeforeStart = new Date(startOfToday.getTime() - 2 * DAY_MS);
+  const trailingStart = new Date(startOfToday.getTime() - 9 * DAY_MS); // 7 days before day-before-yesterday
+
+  const rows = db
+    .prepare(
+      `SELECT te.domain_id, te.started_at, te.duration_seconds
+       FROM time_entries te
+       WHERE te.started_at >= ? AND te.ended_at IS NOT NULL`
+    )
+    .all(trailingStart.toISOString()) as {
+    domain_id: number;
+    started_at: string;
+    duration_seconds: number | null;
+  }[];
+
+  const domains = getDomains();
+  const perDomain = new Map(
+    domains.map((d) => [
+      d.id,
+      {
+        domain_id: d.id,
+        domain_name: d.name,
+        domain_color: d.color,
+        yesterday_seconds: 0,
+        day_before_seconds: 0,
+        trailing_sum: 0,
+      },
+    ])
+  );
+
+  for (const row of rows) {
+    const entry = perDomain.get(row.domain_id);
+    if (!entry) continue;
+
+    const started = new Date(row.started_at).getTime();
+    const seconds = row.duration_seconds ?? 0;
+
+    if (started >= yesterdayStart.getTime() && started < startOfToday.getTime()) {
+      entry.yesterday_seconds += seconds;
+    } else if (started >= dayBeforeStart.getTime() && started < yesterdayStart.getTime()) {
+      entry.day_before_seconds += seconds;
+    } else if (started >= trailingStart.getTime() && started < dayBeforeStart.getTime()) {
+      entry.trailing_sum += seconds;
+    }
+  }
+
+  let yesterday_total = 0;
+  let day_before_total = 0;
+  let trailing_sum_total = 0;
+
+  const domainAnalytics: DomainAnalytics[] = [];
+  for (const v of perDomain.values()) {
+    const trailing_avg_seconds = v.trailing_sum / 7;
+
+    yesterday_total += v.yesterday_seconds;
+    day_before_total += v.day_before_seconds;
+    trailing_sum_total += v.trailing_sum;
+
+    domainAnalytics.push({
+      domain_id: v.domain_id,
+      domain_name: v.domain_name,
+      domain_color: v.domain_color,
+      yesterday_seconds: v.yesterday_seconds,
+      day_before_seconds: v.day_before_seconds,
+      trailing_avg_seconds,
+      vs_previous_day_pct:
+        v.day_before_seconds > 0
+          ? ((v.yesterday_seconds - v.day_before_seconds) / v.day_before_seconds) * 100
+          : null,
+      vs_trailing_avg_pct:
+        trailing_avg_seconds > 0
+          ? ((v.yesterday_seconds - trailing_avg_seconds) / trailing_avg_seconds) * 100
+          : null,
+    });
+  }
+
+  return {
+    domains: domainAnalytics,
+    yesterday_total,
+    day_before_total,
+    trailing_avg_total: trailing_sum_total / 7,
+  };
 }
 
 export function getHistory(days: number): (TimeEntry & { domain_name: string; domain_color: string })[] {
