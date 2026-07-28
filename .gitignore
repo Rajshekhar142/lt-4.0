@@ -43,10 +43,9 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 
-# Playwright
-node_modules/
-/test-results/
-/playwright-report/
-/blob-report/
-/playwright/.cache/
-/playwright/.auth/
+# Ignore local Terraform state and working directory
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+.terraform.lock.hcl
