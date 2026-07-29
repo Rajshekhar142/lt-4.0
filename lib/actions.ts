@@ -24,13 +24,10 @@ export async function loginAction(
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE, token, {
     httpOnly: true,
-    // TODO: flip to true once the EC2 deploy is behind real HTTPS
-    // (certbot + a domain) — with plain http://, secure cookies never
-    // get sent at all and login would silently break.
     secure: false,
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30, // 30 days, matches SESSION_DURATION_MS in db.ts
+    maxAge: 60 * 60 * 24 * 30,
   });
 
   redirect("/");
@@ -59,8 +56,19 @@ export async function startEntryAction(domainId: number) {
   return entry;
 }
 
-export async function stopEntryAction(entryId: number, description: string = "") {
-  const entry = db.stopEntry(entryId, description);
+export async function stopEntryAction(
+  entryId: number,
+  description: string = "",
+  frr: number | null = null
+) {
+  const entry = db.stopEntry(entryId, description, frr);
+  revalidatePath("/");
+  revalidatePath("/history");
+  return entry;
+}
+
+export async function setPoaAction(entryId: number, poa: string | null) {
+  const entry = db.setEntryPoa(entryId, poa);
   revalidatePath("/");
   revalidatePath("/history");
   return entry;

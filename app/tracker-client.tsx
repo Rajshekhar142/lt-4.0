@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState, useTransition } from "react";
-import { startEntryAction, stopEntryAction } from "@/lib/actions";
+import { startEntryAction, stopEntryAction, setPoaAction } from "@/lib/actions";
 import { formatDuration } from "@/lib/format";
 import type { Domain, TimeEntry } from "@/lib/db";
 
 type ActiveEntry = (TimeEntry & { domain_name: string }) | null;
+
+const POA_FRR_DOMAINS = ["Builder", "Learner"];
 
 export default function TrackerClient({
   domains,
@@ -21,8 +23,26 @@ export default function TrackerClient({
   const [now, setNow] = useState(() => Date.now());
   const [isPending, startTransition] = useTransition();
   const [description, setDescription] = useState<string>("");
+  const [frrOn, setFrrOn] = useState(false);
+  const [poaText, setPoaText] = useState("");
 
-  // Tick every second while a domain is running.
+  const [awaitingPoa, setAwaitingPoa] = useState<{
+    entryId: number;
+    domainName: string;
+    domainColor: string;
+  } | null>(null);
+
+  function handleSubmitPoa(poaValue: string | null) {
+    if (!awaitingPoa) return;
+    const target = awaitingPoa;
+    startTransition(async () => {
+      await setPoaAction(target.entryId, poaValue);
+      setAwaitingPoa(null);
+      setPoaText("");
+    });
+  }
+  
+
   useEffect(() => {
     if (!active) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -40,26 +60,64 @@ export default function TrackerClient({
   function handleToggle(domain: Domain) {
     startTransition(async () => {
       if (active && active.domain_id === domain.id) {
-        const stopped = await stopEntryAction(active.id, description);
+        const eligible = POA_FRR_DOMAINS.includes(domain.name);
+        const stopped = await stopEntryAction(
+          active.id,
+          description,
+          eligible ? (frrOn ? 1 : 0) : null
+        );
         setTodayTotals((prev) => ({
           ...prev,
           [domain.id]: (prev[domain.id] ?? 0) + (stopped.duration_seconds ?? 0),
         }));
         setActive(null);
-        setDescription(""); // Reset note field on stop
+        setDescription("");
+        setFrrOn(false);
+        if (eligible) {
+          setAwaitingPoa({
+            entryId: stopped.id,
+            domainName: domain.name,
+            domainColor: domain.color,
+          });
+        }
       } else {
         if (active) {
-          await stopEntryAction(active.id, description);
+          const prevDomain = domains.find((d) => d.id === active.domain_id);
+          const prevEligible = prevDomain
+            ? POA_FRR_DOMAINS.includes(prevDomain.name)
+            : false;
+          const stopped = await stopEntryAction(
+            active.id,
+            description,
+            prevEligible ? (frrOn ? 1 : 0) : null
+          );
           setTodayTotals((prev) => ({
             ...prev,
             [active.domain_id]:
-              (prev[active.domain_id] ?? 0) + Math.round(liveElapsed),
+              (prev[active.domain_id] ?? 0) + (stopped.duration_seconds ?? 0),
           }));
-          setDescription(""); // Reset note field when switching domain
+          setDescription("");
+          setFrrOn(false);
+          if (prevEligible && prevDomain) {
+            setAwaitingPoa({
+              entryId: stopped.id,
+              domainName: prevDomain.name,
+              domainColor: prevDomain.color,
+            });
+          }
         }
         const entry = await startEntryAction(domain.id);
         setActive({ ...entry, domain_name: domain.name });
       }
+    });
+  }
+
+  function handlePoa(value: number) {
+    if (!awaitingPoa) return;
+    const target = awaitingPoa;
+    startTransition(async () => {
+      await setPoaAction(target.entryId, value);
+      setAwaitingPoa(null);
     });
   }
 
@@ -83,9 +141,9 @@ export default function TrackerClient({
           )}
         </div>
 
-        {/* Note input field visible while tracking */}
+        {/* Note input field and FRR toggle while tracking */}
         {active && (
-          <div className="mt-6 max-w-md mx-auto">
+          <div className="mt-6 max-w-md mx-auto space-y-3">
             <input
               type="text"
               value={description}
@@ -93,9 +151,62 @@ export default function TrackerClient({
               placeholder={`What are you working on in ${active.domain_name}?`}
               className="w-full px-4 py-2 text-sm rounded-md border border-border bg-surface text-fg focus:outline-none focus:ring-1 focus:ring-fg-muted transition-colors"
             />
+
+            {POA_FRR_DOMAINS.includes(activeDomain?.name ?? "") && (
+              <button
+                type="button"
+                onClick={() => setFrrOn((v) => !v)}
+                className={`px-4 py-1.5 rounded-md border text-sm font-medium transition-colors ${
+                  frrOn
+                    ? "bg-amber-400/20 border-amber-400 text-amber-600"
+                    : "border-border text-fg-muted hover:bg-surface-hover"
+                }`}
+              >
+                FRR {frrOn ? "✓" : ""}
+              </button>
+            )}
           </div>
         )}
       </div>
+
+      {/* Proof of Artifact Post-Mortem Card */}
+{awaitingPoa && (
+  <div
+    className="max-w-md mx-auto rounded-lg border px-5 py-4 bg-surface space-y-3"
+    style={{ borderColor: awaitingPoa.domainColor }}
+  >
+    <div className="text-sm text-fg-muted">
+      Proof of Artifact — what did this{" "}
+      <span className="text-fg font-medium">{awaitingPoa.domainName}</span>{" "}
+      session produce?
+    </div>
+
+    <input
+      type="text"
+      value={poaText}
+      onChange={(e) => setPoaText(e.target.value)}
+      placeholder="Paste PR link, commit message, output notes..."
+      className="w-full px-4 py-2 text-sm rounded-md border border-border bg-surface text-fg focus:outline-none focus:ring-1 focus:ring-fg-muted transition-colors"
+    />
+
+    <div className="flex justify-end gap-2">
+      <button
+        onClick={() => handleSubmitPoa(null)}
+        disabled={isPending}
+        className="px-3 py-1.5 rounded-md text-xs text-fg-muted hover:text-fg transition-colors"
+      >
+        Skip
+      </button>
+      <button
+        onClick={() => handleSubmitPoa(poaText)}
+        disabled={isPending || !poaText.trim()}
+        className="px-4 py-1.5 rounded-md border border-border bg-surface hover:bg-surface-hover text-xs font-medium transition-colors disabled:opacity-50"
+      >
+        Save Proof
+      </button>
+    </div>
+  </div>
+)}
 
       {/* Domain rows */}
       <div className="space-y-2">

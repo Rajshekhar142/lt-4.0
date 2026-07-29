@@ -68,10 +68,20 @@ function getDb(): DatabaseSync {
     instance.exec("ALTER TABLE time_entries ADD COLUMN description TEXT");
   }
 
+  const hasFrr = timeEntriesColumns.some((col) => col.name === "frr");
+  if (!hasFrr) {
+    instance.exec("ALTER TABLE time_entries ADD COLUMN frr INTEGER");
+  }
+
+  const hasPoa = timeEntriesColumns.some((col) => col.name === "poa");
+  if (!hasPoa) {
+    instance.exec("ALTER TABLE time_entries ADD COLUMN poa INTEGER");
+  }
+
   const DEFAULT_DOMAINS: { name: string; color: string }[] = [
-    { name: "Coding", color: "#ff8552" },
-    { name: "Chess", color: "#6c8ae4" },
-    { name: "Reading", color: "#4caf7d" },
+    { name: "Builder", color: "#ff8552" },
+    { name: "Learner", color: "#6c8ae4" },
+    { name: "Casual", color: "#4caf7d" },
   ];
 
   const countRow = instance.prepare("SELECT COUNT(*) as c FROM domains").get() as
@@ -126,6 +136,8 @@ export type TimeEntry = {
   ended_at: string | null;
   description: string | null;
   duration_seconds: number | null;
+  frr: number | null;
+  poa: string | null;
 };
 
 function toPlain<T>(value: T): T {
@@ -213,7 +225,20 @@ export function startEntry(domainId: number): TimeEntry {
   );
 }
 
-export function stopEntry(entryId: number, description: string = ""): TimeEntry {
+const POA_FRR_ELIGIBLE_DOMAINS = new Set(["Builder", "Learner"]);
+
+function isEligibleForScoring(domainId: number): boolean {
+  const domain = db
+    .prepare("SELECT name FROM domains WHERE id = ?")
+    .get(domainId) as { name: string } | undefined;
+  return domain ? POA_FRR_ELIGIBLE_DOMAINS.has(domain.name) : false;
+}
+
+export function stopEntry(
+  entryId: number,
+  description: string = "",
+  frr: number | null = null
+): TimeEntry {
   const entry = db
     .prepare("SELECT * FROM time_entries WHERE id = ?")
     .get(entryId) as TimeEntry | undefined;
@@ -221,6 +246,9 @@ export function stopEntry(entryId: number, description: string = ""): TimeEntry 
   if (!entry) {
     throw new Error(`stopEntry: no time_entries row with id ${entryId}`);
   }
+
+  const eligible = isEligibleForScoring(entry.domain_id);
+  const frrToStore = eligible ? frr : null;
 
   const endedAt = new Date();
   const startedAt = new Date(entry.started_at);
@@ -230,8 +258,27 @@ export function stopEntry(entryId: number, description: string = ""): TimeEntry 
   );
 
   db.prepare(
-    "UPDATE time_entries SET ended_at = ?, duration_seconds = ?, description = ? WHERE id = ?"
-  ).run(endedAt.toISOString(), durationSeconds, description, entryId);
+    "UPDATE time_entries SET ended_at = ?, duration_seconds = ?, description = ?, frr = ? WHERE id = ?"
+  ).run(endedAt.toISOString(), durationSeconds, description, frrToStore, entryId);
+
+  return toPlain(
+    db.prepare("SELECT * FROM time_entries WHERE id = ?").get(entryId) as TimeEntry
+  );
+}
+
+export function setEntryPoa(entryId: number, poa: string | null): TimeEntry {
+  const entry = db
+    .prepare("SELECT * FROM time_entries WHERE id = ?")
+    .get(entryId) as TimeEntry | undefined;
+
+  if (!entry) {
+    throw new Error(`setEntryPoa: no time_entries row with id ${entryId}`);
+  }
+
+  const eligible = isEligibleForScoring(entry.domain_id);
+  const poaToStore = eligible && poa && poa.trim().length > 0 ? poa.trim() : null;
+
+  db.prepare("UPDATE time_entries SET poa = ? WHERE id = ?").run(poaToStore, entryId);
 
   return toPlain(
     db.prepare("SELECT * FROM time_entries WHERE id = ?").get(entryId) as TimeEntry
