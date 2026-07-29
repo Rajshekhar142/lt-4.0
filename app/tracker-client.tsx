@@ -112,7 +112,7 @@ export default function TrackerClient({
     });
   }
 
-  function handlePoa(value: number) {
+  function handlePoa(value: string) {
     if (!awaitingPoa) return;
     const target = awaitingPoa;
     startTransition(async () => {
