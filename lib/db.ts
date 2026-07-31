@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import path from "path";
 import fs from "fs";
 import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { loadSecrets } from "../vault/vault";
 
 const DB_DIR = path.join(process.cwd(), "data");
 const DB_FILENAME =
@@ -13,11 +14,18 @@ if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 declare global {
   // eslint-disable-next-line no-var
   var __ltDb: DatabaseSync | undefined;
+  // eslint-disable-next-line no-var
+  var __ltAdminSeedPromise: Promise<void> | undefined;
 }
 
 let _db: DatabaseSync | null = null;
 
-function getDb(): DatabaseSync {
+/**
+ * Synchronous DB setup: open the file, run migrations, seed default domains.
+ * No Vault involved here — this can run immediately at module load, same as
+ * it did before Vault was introduced.
+ */
+function initDb(): DatabaseSync {
   if (_db) return _db;
 
   const instance = globalThis.__ltDb ?? new DatabaseSync(DB_PATH);
@@ -63,7 +71,6 @@ function getDb(): DatabaseSync {
   const hasDescription = timeEntriesColumns.some(
     (col) => col.name === "description"
   );
-
   if (!hasDescription) {
     instance.exec("ALTER TABLE time_entries ADD COLUMN description TEXT");
   }
@@ -95,36 +102,44 @@ function getDb(): DatabaseSync {
     for (const d of DEFAULT_DOMAINS) insert.run(d.name, d.color);
   }
 
-  const userCountRow = instance.prepare("SELECT COUNT(*) as c FROM users").get() as
-    | { c: number }
-    | undefined;
-
-  if (!userCountRow || userCountRow.c === 0) {
-    const email = process.env.ADMIN_EMAIL;
-    const password = process.env.ADMIN_PASSWORD;
-
-    if (email && password) {
-      const salt = randomBytes(16).toString("hex");
-      const hash = scryptSync(password, salt, 64).toString("hex");
-      instance
-        .prepare(
-          "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)"
-        )
-        .run(email, `${salt}:${hash}`, new Date().toISOString());
-    }
-  }
-
   _db = instance;
   return _db;
 }
 
-export const db = new Proxy({} as DatabaseSync, {
-  get(_target, prop, receiver) {
-    const real = getDb();
-    const value = Reflect.get(real, prop, real);
-    return typeof value === "function" ? value.bind(real) : value;
-  },
-});
+// Synchronous handle — same shape as before Vault was introduced.
+// No Proxy trickery needed once getDb() is sync again.
+const db: DatabaseSync = initDb();
+
+/**
+ * Async, Vault-dependent: seed the admin user if the users table is empty.
+ * Cached on a global promise so it only ever runs once per process,
+ * regardless of how many callers await it concurrently.
+ */
+export function ensureAdminSeeded(): Promise<void> {
+  if (globalThis.__ltAdminSeedPromise) return globalThis.__ltAdminSeedPromise;
+
+  globalThis.__ltAdminSeedPromise = (async () => {
+    const userCountRow = db.prepare("SELECT COUNT(*) as c FROM users").get() as
+      | { c: number }
+      | undefined;
+
+    if (userCountRow && userCountRow.c > 0) return; // already seeded
+
+    const secrets = await loadSecrets();
+    const email = secrets.ADMIN_EMAIL;
+    const password = secrets.ADMIN_PASSWORD;
+
+    if (email && password) {
+      const salt = randomBytes(16).toString("hex");
+      const hash = scryptSync(password, salt, 64).toString("hex");
+      db.prepare(
+        "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)"
+      ).run(email, `${salt}:${hash}`, new Date().toISOString());
+    }
+  })();
+
+  return globalThis.__ltAdminSeedPromise;
+}
 
 export type Domain = { id: number; name: string; color: string };
 export type User = { id: number; email: string; password_hash: string; created_at: string };
@@ -179,7 +194,11 @@ export function createSession(userId: number): string {
   return token;
 }
 
-export function getSessionUser(token: string): User | null {
+// Vault-dependent only for the "first ever run, no users yet" case —
+// ensureAdminSeeded() is a cached no-op after the first call.
+export async function getSessionUser(token: string): Promise<User | null> {
+  await ensureAdminSeeded();
+
   const row = db
     .prepare(
       `SELECT u.* FROM sessions s
