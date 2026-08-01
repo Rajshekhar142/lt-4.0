@@ -51,4 +51,6 @@ data/*.db-shm
 .terraform.lock.hcl
 
 # seed scripts:
-.scripts/
+.scripts/vault-keys.json
+.env.local
+scripts/*

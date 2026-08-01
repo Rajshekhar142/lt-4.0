@@ -1,6 +1,5 @@
 // vault.js
 
-console.log(process.env.VAULT_ADDR)
 async function loadSecrets() {
   const loginRes = await fetch(`${process.env.VAULT_ADDR}/v1/auth/approle/login`, {
     method: 'POST',
