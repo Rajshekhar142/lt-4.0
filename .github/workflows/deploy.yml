@@ -4,123 +4,41 @@ on:
   push:
     branches: [tdevops]
 
-permissions:
-  contents: read
-  id-token: write   # required for OIDC token minting - no AWS keys stored anywhere
-
-concurrency:
-  group: deploy-${{ github.ref }}
-  cancel-in-progress: false
-
-env:
-  AWS_REGION: us-east-1
-  ARTIFACT_BUCKET: lifetracker-deploy-artifacts-XXXXXXXXXXXX   # <-- replace with your actual bucket name from terraform.tfvars
-  EC2_INSTANCE_ID: i-0b5e6a3dc6ba22033                          # confirmed live instance
-  IAM_ROLE_ARN: arn:aws:iam::XXXXXXXXXXXX:role/lifetracker-deploy   # <-- run: terraform output -raw github_deploy_role_arn (after apply)
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout code
+        uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v7
+      - name: Set up Node 22
+        uses: actions/setup-node@v7
         with:
           node-version: 22
-          cache: 'npm'
 
-      - run: npm ci
+      - name: Use npm 11.6.2
+        run: npm install -g npm@11.6.2
 
-      # The ONLY build that happens, anywhere, for this commit.
-      - run: npm run build
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Package deploy artifact
-        run: |
-          tar -czf release.tar.gz \
-            .next public package.json package-lock.json \
-            $(test -f next.config.js && echo next.config.js || true)
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: build-output
-          path: release.tar.gz
-          retention-days: 3
+      - name: Build (this is the actual check — fails on type errors, bad imports, etc.)
+        run: npm run build
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
         with:
-          name: build-output
-
-      # Short-lived (max 1hr) credentials via OIDC - no stored AWS keys.
-      # Trust policy only accepts tokens where sub =
-      # repo:<owner>/<repo>:ref:refs/heads/tdevops - a fork PR run cannot match this.
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ env.IAM_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Upload artifact to S3 (hand-off point to EC2)
-        run: |
-          aws s3 cp release.tar.gz \
-            s3://${{ env.ARTIFACT_BUCKET }}/${{ github.sha }}/release.tar.gz
-
-      - name: Deploy via SSM - build already done, this only installs deps + atomic swap
-        run: |
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "${{ env.EC2_INSTANCE_ID }}" \
-            --document-name "AWS-RunShellScript" \
-            --comment "Deploy ${{ github.sha }}" \
-            --parameters commands="$(cat <<SCRIPT
-          set -e
-          SHA="${{ github.sha }}"
-          RELEASE_DIR="\$HOME/lifetracker/releases/\$SHA"
-
-          mkdir -p "\$RELEASE_DIR"
-          aws s3 cp "s3://${{ env.ARTIFACT_BUCKET }}/\$SHA/release.tar.gz" "\$RELEASE_DIR/release.tar.gz"
-          tar -xzf "\$RELEASE_DIR/release.tar.gz" -C "\$RELEASE_DIR"
-
-          cd "\$RELEASE_DIR"
-          npm ci --omit=dev
-
-          # Atomic swap - symlink flips fully old->new in one syscall, no torn state.
-          ln -sfn "\$RELEASE_DIR" "\$HOME/lifetracker/current"
-
-          pm2 restart lifetracker --update-env
-
-          for i in 1 2 3 4 5; do
-            if curl -sf http://localhost:3000/api/health; then
-              echo "Healthy on attempt \$i"
-              exit 0
-            fi
-            sleep 2
-          done
-
-          echo "Health check failed - rolling back"
-          PREV_SHA=\$(ls -t "\$HOME/lifetracker/releases" | sed -n '2p')
-          ln -sfn "\$HOME/lifetracker/releases/\$PREV_SHA" "\$HOME/lifetracker/current"
-          pm2 restart lifetracker --update-env
-          exit 1
-          SCRIPT
-          )" \
-            --query "Command.CommandId" --output text)
-
-          echo "Waiting on command $COMMAND_ID..."
-          aws ssm wait command-executed \
-            --command-id "$COMMAND_ID" \
-            --instance-id "${{ env.EC2_INSTANCE_ID }}"
-
-          aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "${{ env.EC2_INSTANCE_ID }}" \
-            --query "{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}"
-
-      - name: Clean up old releases (keep last 5)
-        run: |
-          aws ssm send-command \
-            --instance-ids "${{ env.EC2_INSTANCE_ID }}" \
-            --document-name "AWS-RunShellScript" \
-            --parameters commands="cd \$HOME/lifetracker/releases && ls -t | tail -n +6 | xargs -r rm -rf" \
-            --output text
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd ~/lifetracker
+            git pull origin tdevops
+            npm install
+            pm2 stop lifetracker
+            npm run build
+            pm2 restart lifetracker

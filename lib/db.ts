@@ -116,9 +116,24 @@ function initDb(): DatabaseSync {
   return _db;
 }
 
-// Synchronous handle — same shape as before Vault was introduced.
-// No Proxy trickery needed once getDb() is sync again.
-const db: DatabaseSync = initDb();
+// Lazy handle: the SQLite file must NOT be opened at module load time.
+// `next build`'s "Collecting page data" phase imports every route module
+// (including this file, transitively) across 3 parallel worker PROCESSES.
+// Each process has its own globalThis, so __ltDb caching doesn't prevent
+// 3 separate processes from racing to open/migrate the same file at once —
+// that race is exactly what produced "database is locked" during build.
+// This app has no build-time data dependency (everything here is
+// per-request/dynamic), so the fix is: never touch the file until an
+// actual request handler calls a real db function. The Proxy defers
+// initDb() until the first genuine property access (e.g. `db.prepare(...)`),
+// which only happens at runtime, never during static page-data collection.
+const db: DatabaseSync = new Proxy({} as DatabaseSync, {
+  get(_target, prop, _receiver) {
+    const instance = initDb();
+    const value = Reflect.get(instance, prop, instance);
+    return typeof value === "function" ? value.bind(instance) : value;
+  },
+});
 
 /**
  * Async, Vault-dependent: seed the admin user if the users table is empty.

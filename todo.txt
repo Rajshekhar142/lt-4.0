@@ -1,0 +1,4 @@
+# next.config.js is set to output: 'standalone' but pm2 runs `npm start` (next start),
+# which doesn't work with standalone builds -> server action mismatch errors.
+# Fix: either drop output:'standalone', or point pm2 at .next/standalone/server.js
+# (and copy public/ + .next/static into .next/standalone/ as part of the build step).

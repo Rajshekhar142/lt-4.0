@@ -1,56 +1,67 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# ==========================================
+# Dependencies
+# ==========================================
+node_modules/
+.pnpm-store/
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
+# ==========================================
+# Next.js & TypeScript Build Outputs
+# ==========================================
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
 
-# testing
-/coverage
+# ==========================================
+# Secrets, Local Data & Vault Configs
+# ==========================================
+# Environment files
+.env
+.env*.local
 
-# next.js
-/.next/
-/out/
+# Sensitive credentials & local data dumps
+aws_data.txt
+vault_prod_data/
+vault/
+data/
 
-# production
-/build
+# Vault dev configurations/scripts (uncomment if you want these committed)
+# vault-dev-config.hcl
+# vault-seed.sh
 
-# misc
-.DS_Store
-*.pem
-*.txt
-# debug
+# ==========================================
+# Terraform Local State & Artifacts
+# ==========================================
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/*.tfvars
+terraform/*.tfvars.json
+terraform/override.tf
+terraform/override.tf.json
+terraform/*_override.tf
+terraform/*_override.tf.json
+
+# ==========================================
+# Testing & Coverage
+# ==========================================
+coverage/
+.vitest/
+
+# ==========================================
+# Logs & Runtime Data
+# ==========================================
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
-
-# vercel
-.vercel
-
-# typescript
-*.tsbuildinfo
-next-env.d.ts
-data/*.db
-data/*.db-wal
-data/*.db-shm
-
-# Ignore local Terraform state and working directory
-.terraform/
-*.tfstate
-*.tfstate.backup
-*.tfvars
-.terraform.lock.hcl
-
-# seed scripts:
-.scripts/vault-keys.json
-.env.local
-scripts/*
+# ==========================================
+# Operating System & Editor Junk
+# ==========================================
+.DS_Store
+*.pem
+.vscode/
+.idea/

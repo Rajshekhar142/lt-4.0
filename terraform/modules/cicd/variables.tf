@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region for all resources"
   type        = string
-  default     = "ap-south-1"
+  default     = "us-east-1"
 }
 
 variable "github_repo_owner" {
@@ -25,7 +25,7 @@ variable "artifact_bucket_name" {
   type        = string
 }
 
-variable "ec2_instance_arn" {
+variable "ec2_instance_id" {
   description = "ARN of the EC2 instance the deploy role is allowed to SSM into. Use * to scope by tag instead (see ssm policy)."
   type        = string
 }
