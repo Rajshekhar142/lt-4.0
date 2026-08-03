@@ -74,6 +74,17 @@ export async function setPoaAction(entryId: number, poa: string | null) {
   return entry;
 }
 
+export async function setFlowMetaAction(
+  entryId: number,
+  endReason: db.EndReason | null,
+  flowRating: number | null
+) {
+  const entry = db.setEntryFlowMeta(entryId, endReason, flowRating);
+  revalidatePath("/");
+  revalidatePath("/history");
+  return entry;
+}
+
 export async function getHistoryAction(days: number = 30) {
   return db.getHistory(days);
 }

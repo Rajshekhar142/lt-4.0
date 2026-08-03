@@ -1,6 +1,6 @@
 import { getHistoryAction, getAnalyticsAction } from "@/lib/actions";
 import { requireUser } from "@/lib/auth";
-import { formatDuration, formatDayLabel } from "@/lib/format";
+import { formatDuration, formatDayLabel, END_REASON_META, FLOW_SHADES } from "@/lib/format";
 import AnalyticsSection from "@/components/AnalyticsSection";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +17,8 @@ type DayGroup = {
     duration_seconds: number | null;
     frr: number | null;
     poa: string | null;
+    end_reason: string | null;
+    flow_rating: number | null;
     started_at: string;
   }[];
 };
@@ -57,6 +59,8 @@ export default async function HistoryPage() {
       duration_seconds: e.duration_seconds,
       frr: e.frr,
       poa: e.poa,
+      end_reason: e.end_reason,
+      flow_rating: e.flow_rating,
       started_at: e.started_at,
     });
   }
@@ -133,8 +137,31 @@ export default async function HistoryPage() {
                   </span>
 
                   <div className="flex-1 min-w-0 pr-2">
-                    <div className="truncate text-fg">
-                      {entry.description || "—"}
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="truncate text-fg">
+                        {entry.description || "—"}
+                      </span>
+                      {entry.end_reason && END_REASON_META[entry.end_reason] && (
+                        <span
+                          title={END_REASON_META[entry.end_reason].label}
+                          className="shrink-0 text-xs px-1.5 py-0.5 rounded bg-surface-hover border border-border text-fg-muted cursor-default"
+                        >
+                          {END_REASON_META[entry.end_reason].emoji}
+                        </span>
+                      )}
+                      {typeof entry.flow_rating === "number" &&
+                        FLOW_SHADES[entry.flow_rating] && (
+                          <span
+                            title={`Flow rating: ${entry.flow_rating}/3`}
+                            style={{
+                              background: FLOW_SHADES[entry.flow_rating].bg,
+                              color: FLOW_SHADES[entry.flow_rating].fg,
+                            }}
+                            className="shrink-0 text-xs px-1.5 py-0.5 rounded-full font-semibold cursor-default"
+                          >
+                            {entry.flow_rating}/3
+                          </span>
+                        )}
                     </div>
                     {hasPoa && (
                       <div className="text-xs text-fg-muted truncate">

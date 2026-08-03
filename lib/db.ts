@@ -85,6 +85,16 @@ function initDb(): DatabaseSync {
     instance.exec("ALTER TABLE time_entries ADD COLUMN poa INTEGER");
   }
 
+  const hasEndReason = timeEntriesColumns.some((col) => col.name === "end_reason");
+  if (!hasEndReason) {
+    instance.exec("ALTER TABLE time_entries ADD COLUMN end_reason TEXT");
+  }
+
+  const hasFlowRating = timeEntriesColumns.some((col) => col.name === "flow_rating");
+  if (!hasFlowRating) {
+    instance.exec("ALTER TABLE time_entries ADD COLUMN flow_rating INTEGER");
+  }
+
   const DEFAULT_DOMAINS: { name: string; color: string }[] = [
     { name: "Builder", color: "#ff8552" },
     { name: "Learner", color: "#6c8ae4" },
@@ -144,6 +154,21 @@ export function ensureAdminSeeded(): Promise<void> {
 export type Domain = { id: number; name: string; color: string };
 export type User = { id: number; email: string; password_hash: string; created_at: string };
 export type Session = { token: string; user_id: number; expires_at: string };
+export type EndReason =
+  | "natural_completion"
+  | "blocker"
+  | "switched_early"
+  | "sleep"
+  | "forced_stop";
+
+const VALID_END_REASONS: ReadonlySet<string> = new Set([
+  "natural_completion",
+  "blocker",
+  "switched_early",
+  "sleep",
+  "forced_stop",
+]);
+
 export type TimeEntry = {
   id: number;
   domain_id: number;
@@ -153,6 +178,8 @@ export type TimeEntry = {
   duration_seconds: number | null;
   frr: number | null;
   poa: string | null;
+  end_reason: EndReason | null;
+  flow_rating: number | null;
 };
 
 function toPlain<T>(value: T): T {
@@ -298,6 +325,36 @@ export function setEntryPoa(entryId: number, poa: string | null): TimeEntry {
   const poaToStore = eligible && poa && poa.trim().length > 0 ? poa.trim() : null;
 
   db.prepare("UPDATE time_entries SET poa = ? WHERE id = ?").run(poaToStore, entryId);
+
+  return toPlain(
+    db.prepare("SELECT * FROM time_entries WHERE id = ?").get(entryId) as TimeEntry
+  );
+}
+
+export function setEntryFlowMeta(
+  entryId: number,
+  endReason: EndReason | null,
+  flowRating: number | null
+): TimeEntry {
+  const entry = db
+    .prepare("SELECT * FROM time_entries WHERE id = ?")
+    .get(entryId) as TimeEntry | undefined;
+
+  if (!entry) {
+    throw new Error(`setEntryFlowMeta: no time_entries row with id ${entryId}`);
+  }
+
+  const reasonToStore =
+    endReason && VALID_END_REASONS.has(endReason) ? endReason : null;
+
+  const ratingToStore =
+    typeof flowRating === "number" && flowRating >= 0 && flowRating <= 3
+      ? Math.round(flowRating)
+      : null;
+
+  db.prepare(
+    "UPDATE time_entries SET end_reason = ?, flow_rating = ? WHERE id = ?"
+  ).run(reasonToStore, ratingToStore, entryId);
 
   return toPlain(
     db.prepare("SELECT * FROM time_entries WHERE id = ?").get(entryId) as TimeEntry

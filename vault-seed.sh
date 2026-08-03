@@ -1,3 +1,5 @@
+#!/bin/bash
+
 docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault-test vault secrets enable -path=lifetracker kv-v2
 
 docker exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN=root vault-test vault kv put lifetracker/db \
