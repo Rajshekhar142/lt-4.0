@@ -95,6 +95,24 @@ function initDb(): DatabaseSync {
     instance.exec("ALTER TABLE time_entries ADD COLUMN flow_rating INTEGER");
   }
 
+  // NEW — nullable tag for priority-quadrant grouping. Old rows stay tag = null;
+  // they'll fall back to domain name in the aggregation query rather than
+  // needing a backfill.
+  const hasTag = timeEntriesColumns.some((col) => col.name === "tag");
+  if (!hasTag) {
+    instance.exec("ALTER TABLE time_entries ADD COLUMN tag TEXT");
+  }
+
+  // NEW — tiny key/value store for the prime-focus text (and any other
+  // one-off settings later). No need for a dedicated table per setting.
+  instance.exec(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+  `);
+
+
   const DEFAULT_DOMAINS: { name: string; color: string }[] = [
     { name: "Builder", color: "#ff8552" },
     { name: "Learner", color: "#6c8ae4" },
@@ -195,6 +213,7 @@ export type TimeEntry = {
   poa: string | null;
   end_reason: EndReason | null;
   flow_rating: number | null;
+  tag: string | null; // NEW
 };
 
 function toPlain<T>(value: T): T {
@@ -298,7 +317,8 @@ function isEligibleForScoring(domainId: number): boolean {
 export function stopEntry(
   entryId: number,
   description: string = "",
-  frr: number | null = null
+  frr: number | null = null,
+  tag: string | null = null   // NEW
 ): TimeEntry {
   const entry = db
     .prepare("SELECT * FROM time_entries WHERE id = ?")
@@ -310,6 +330,7 @@ export function stopEntry(
 
   const eligible = isEligibleForScoring(entry.domain_id);
   const frrToStore = eligible ? frr : null;
+  const tagToStore = tag && tag.trim().length > 0 ? tag.trim() : null; // NEW — no domain gate, tags apply everywhere
 
   const endedAt = new Date();
   const startedAt = new Date(entry.started_at);
@@ -319,8 +340,8 @@ export function stopEntry(
   );
 
   db.prepare(
-    "UPDATE time_entries SET ended_at = ?, duration_seconds = ?, description = ?, frr = ? WHERE id = ?"
-  ).run(endedAt.toISOString(), durationSeconds, description, frrToStore, entryId);
+    "UPDATE time_entries SET ended_at = ?, duration_seconds = ?, description = ?, frr = ?, tag = ? WHERE id = ?"
+  ).run(endedAt.toISOString(), durationSeconds, description, frrToStore, tagToStore, entryId);
 
   return toPlain(
     db.prepare("SELECT * FROM time_entries WHERE id = ?").get(entryId) as TimeEntry
@@ -516,4 +537,131 @@ export function getAnalytics(): Analytics {
     yesterday_total,
     trailing_avg_total: trailing_sum_total / 7,
   };
+}
+
+export type PriorityQuadrantGroup = {
+  key: string;              // tag, or domain name when tag is null
+  domain_id: number;
+  domain_color: string;
+  total_seconds: number;
+  session_count: number;
+  avg_flow_rating: number | null;
+  completion_ratio: number;   // share ending in natural_completion
+  poa_presence_ratio: number; // share with a non-null poa
+  avg_frr: number | null;
+  quality_score: number;      // composite, 0-1
+};
+
+export function getPriorityQuadrant(days: number = 30): PriorityQuadrantGroup[] {
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+
+  const rows = db
+    .prepare(
+      `SELECT te.tag, te.domain_id, d.name as domain_name, d.color as domain_color,
+              te.duration_seconds, te.flow_rating, te.end_reason, te.poa, te.frr
+       FROM time_entries te JOIN domains d ON d.id = te.domain_id
+       WHERE te.started_at >= ? AND te.ended_at IS NOT NULL`
+    )
+    .all(since.toISOString()) as {
+    tag: string | null;
+    domain_id: number;
+    domain_name: string;
+    domain_color: string;
+    duration_seconds: number | null;
+    flow_rating: number | null;
+    end_reason: EndReason | null;
+    poa: string | null;
+    frr: number | null;
+  }[];
+
+  type Acc = {
+    domain_id: number;
+    domain_color: string;
+    total_seconds: number;
+    session_count: number;
+    flow_sum: number;
+    flow_count: number;
+    completed_count: number;
+    poa_count: number;
+    frr_sum: number;
+    frr_count: number;
+  };
+
+  const groups = new Map<string, Acc>();
+
+  for (const row of rows) {
+    // Fallback to domain name when a session predates tagging, or was never tagged.
+    const key = row.tag ?? row.domain_name;
+    const acc = groups.get(key) ?? {
+      domain_id: row.domain_id,
+      domain_color: row.domain_color,
+      total_seconds: 0,
+      session_count: 0,
+      flow_sum: 0,
+      flow_count: 0,
+      completed_count: 0,
+      poa_count: 0,
+      frr_sum: 0,
+      frr_count: 0,
+    };
+
+    acc.total_seconds += row.duration_seconds ?? 0;
+    acc.session_count += 1;
+    if (row.flow_rating !== null) {
+      acc.flow_sum += row.flow_rating;
+      acc.flow_count += 1;
+    }
+    if (row.end_reason === "natural_completion") acc.completed_count += 1;
+    if (row.poa !== null) acc.poa_count += 1;
+    if (row.frr !== null) {
+      acc.frr_sum += row.frr;
+      acc.frr_count += 1;
+    }
+
+    groups.set(key, acc);
+  }
+
+  const result: PriorityQuadrantGroup[] = [];
+  for (const [key, acc] of groups) {
+    const avg_flow_rating = acc.flow_count > 0 ? acc.flow_sum / acc.flow_count : null;
+    const completion_ratio = acc.completed_count / acc.session_count;
+    const poa_presence_ratio = acc.poa_count / acc.session_count;
+    const avg_frr = acc.frr_count > 0 ? acc.frr_sum / acc.frr_count : null;
+
+    const quality_score =
+      (avg_flow_rating !== null ? avg_flow_rating / 3 : 0) * 0.5 +
+      completion_ratio * 0.3 +
+      poa_presence_ratio * 0.2;
+
+    result.push({
+      key,
+      domain_id: acc.domain_id,
+      domain_color: acc.domain_color,
+      total_seconds: acc.total_seconds,
+      session_count: acc.session_count,
+      avg_flow_rating,
+      completion_ratio,
+      poa_presence_ratio,
+      avg_frr,
+      quality_score,
+    });
+  }
+
+  return result;
+}
+
+
+export function getPrimeFocus(): string | null {
+  const row = db
+    .prepare("SELECT value FROM settings WHERE key = 'prime_focus'")
+    .get() as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+export function setPrimeFocus(text: string | null): void {
+  const value = text && text.trim().length > 0 ? text.trim() : null;
+  db.prepare(
+    "INSERT INTO settings (key, value) VALUES ('prime_focus', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).run(value);
 }

@@ -59,9 +59,10 @@ export async function startEntryAction(domainId: number) {
 export async function stopEntryAction(
   entryId: number,
   description: string = "",
-  frr: number | null = null
+  frr: number | null = null,
+  tag: string | null = null   // NEW
 ) {
-  const entry = db.stopEntry(entryId, description, frr);
+  const entry = db.stopEntry(entryId, description, frr, tag);
   revalidatePath("/");
   revalidatePath("/history");
   return entry;
@@ -95,4 +96,17 @@ export async function getTodayTotalsAction() {
 
 export async function getAnalyticsAction() {
   return db.getAnalytics();
+}
+export async function getPriorityQuadrantAction(days: number = 30) {
+  return db.getPriorityQuadrant(days);
+}
+
+export async function getPrimeFocusAction() {
+  return db.getPrimeFocus();
+}
+
+export async function setPrimeFocusAction(text: string | null) {
+  db.setPrimeFocus(text);
+  revalidatePath("/");
+  return text;
 }

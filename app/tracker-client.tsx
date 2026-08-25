@@ -47,7 +47,7 @@ export default function TrackerClient({
   const [description, setDescription] = useState<string>("");
   const [frrOn, setFrrOn] = useState(false);
   const [poaText, setPoaText] = useState("");
-
+  const [tagText, setTagText] = useState(""); 
   // Single sequential wrap-up flow: POA step (if eligible) -> flow step -> gone.
   const [wrapup, setWrapup] = useState<Wrapup | null>(null);
   const [pendingEndReason, setPendingEndReason] = useState<EndReason | null>(
@@ -110,14 +110,16 @@ export default function TrackerClient({
 
   const activeDomain = domains.find((d) => d.id === active?.domain_id);
 
-  function handleToggle(domain: Domain) {
+function handleToggle(domain: Domain) {
     startTransition(async () => {
       if (active && active.domain_id === domain.id) {
+        // ───────── SPOT 1: same-domain stop (toggling off the domain you're already tracking) ─────────
         const eligible = POA_FRR_DOMAINS.includes(domain.name);
         const stopped = await stopEntryAction(
           active.id,
           description,
-          eligible ? (frrOn ? 1 : 0) : null
+          eligible ? (frrOn ? 1 : 0) : null,
+          tagText   // NEW
         );
         setTodayTotals((prev) => ({
           ...prev,
@@ -126,9 +128,12 @@ export default function TrackerClient({
         setActive(null);
         setDescription("");
         setFrrOn(false);
+        setTagText("");   // NEW
         startWrapup(stopped.id, domain.name, domain.color);
+        // ───────── end SPOT 1 ─────────
       } else {
         if (active) {
+          // ───────── SPOT 2: switching domains (stopping the PREVIOUS domain before starting the new one) ─────────
           const prevDomain = domains.find((d) => d.id === active.domain_id);
           const prevEligible = prevDomain
             ? POA_FRR_DOMAINS.includes(prevDomain.name)
@@ -136,7 +141,8 @@ export default function TrackerClient({
           const stopped = await stopEntryAction(
             active.id,
             description,
-            prevEligible ? (frrOn ? 1 : 0) : null
+            prevEligible ? (frrOn ? 1 : 0) : null,
+            tagText   // NEW
           );
           setTodayTotals((prev) => ({
             ...prev,
@@ -145,9 +151,11 @@ export default function TrackerClient({
           }));
           setDescription("");
           setFrrOn(false);
+          setTagText("");   // NEW
           if (prevDomain) {
             startWrapup(stopped.id, prevDomain.name, prevDomain.color);
           }
+          // ───────── end SPOT 2 ─────────
         }
         const entry = await startEntryAction(domain.id);
         setActive({ ...entry, domain_name: domain.name });
@@ -185,6 +193,14 @@ export default function TrackerClient({
               placeholder={`What are you working on in ${active.domain_name}?`}
               className="w-full px-4 py-2 text-sm rounded-md border border-border bg-surface text-fg focus:outline-none focus:ring-1 focus:ring-fg-muted transition-colors"
             />
+
+            <input
+            type="text"
+            value={tagText}
+            onChange={(e) => setTagText(e.target.value)}
+            placeholder="tag (e.g. dsa, chess-endgames, eks-setup)"
+            className="w-full px-4 py-2 text-sm rounded-md border border-border bg-surface text-fg-muted focus:outline-none focus:ring-1 focus:ring-fg-muted transition-colors"
+    />
 
             {POA_FRR_DOMAINS.includes(activeDomain?.name ?? "") && (
               <button

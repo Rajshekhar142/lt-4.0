@@ -28,6 +28,16 @@ module "ec2_instance" {
   user_data = file("${path.module}/configs/user_data.sh")
   monitoring = false # Change to false if your live server doesn't have detailed monitoring
   subnet_id  = var.subnet_id
+  # Fix 3: Disk-full killed the DB once already (WAL growth + npm/build
+  # artifacts + system updates ate the original ~8GB root volume with no
+  # headroom). Bumping to 20GB on gp3 buys real margin so this class of
+  # incident can't repeat. ~$1.60/month extra — cheap insurance for an
+  # app that has to stay up daily.
+  root_block_device = {
+      volume_size = 20
+      volume_type = "gp3"
+    }
+  
 
   tags = {
     Terraform   = "true"

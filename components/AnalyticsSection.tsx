@@ -1,6 +1,6 @@
 import { formatDuration } from "@/lib/format";
 import type { Analytics } from "@/lib/db";
-
+import PriorityQuadrant from "./PriorityQuadrant";
 function DeltaBadge({ pct, label }: { pct: number | null; label: string }) {
   if (pct === null) {
     return <span className="text-fg-faint">no {label} data</span>;
@@ -23,6 +23,7 @@ export default function AnalyticsSection({ analytics }: { analytics: Analytics }
   const hasAnyToday = analytics.today_total > 0;
 
   return (
+    <>
     <div className="mb-10 pb-8 border-b border-border">
       <h2 className="text-sm text-fg-muted mb-4">Today vs. your recent pace</h2>
 
@@ -82,5 +83,8 @@ export default function AnalyticsSection({ analytics }: { analytics: Analytics }
         </div>
       )}
     </div>
+
+    <PriorityQuadrant />
+    </>
   );
 }

@@ -65,3 +65,5 @@ yarn-error.log*
 *.pem
 .idea/
 *.txt
+*.sql
+.secrets

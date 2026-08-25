@@ -16,3 +16,9 @@ export async function requireUser() {
   if (!user) redirect("/login");
   return user;
 }
+
+export async function getCurrentUser() {
+  const cookieStore = await cookies();
+  const token = cookieStore.get(SESSION_COOKIE)?.value;
+  return token ? await getSessionUser(token) : null;
+}

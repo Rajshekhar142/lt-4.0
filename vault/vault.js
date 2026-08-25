@@ -1,22 +1,13 @@
 // vault.js
+import {SSMClient, GetParameterCommand} from "@aws-sdk/client-ssm"
 
-async function loadSecrets() {
-  const loginRes = await fetch(`${process.env.VAULT_ADDR}/v1/auth/approle/login`, {
-    method: 'POST',
-    body: JSON.stringify({
-      role_id: process.env.VAULT_ROLE_ID,
-      secret_id: process.env.VAULT_SECRET_ID,
-    }),
-  });
-  if (!loginRes.ok) throw new Error(`Vault login failed: ${loginRes.status}`);
-  const { auth } = await loginRes.json();
-  const clientToken = auth.client_token;
+const client = new SSMClient({ region: "us-east-1" });
 
-  const secretRes = await fetch(`${process.env.VAULT_ADDR}/v1/lifetracker/data/db`, {
-    headers: { 'X-Vault-Token': clientToken },
-  });
-  const { data } = await secretRes.json();
-  return data.data; // { DATABASE_URL: "postgres://..." }
+export async function loadSecrets() {
+  const res = await client.send(new GetParameterCommand({
+    Name: "/lifetracker/prod/creds",
+    WithDecryption: true
+  }));
+
+  return JSON.parse(res.Parameter.Value);
 }
-
-module.exports = { loadSecrets };
