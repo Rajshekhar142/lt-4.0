@@ -24,7 +24,7 @@ jobs:
       - name: Build (this is the actual check — fails on type errors, bad imports, etc.)
         run: npm run build
       - name: Package release artifact
-        run: tar -czf release.tar.gz .next public package.json package-lock.json next.config.ts
+        run: tar -czf release.tar.gz .next package.json package-lock.json next.config.ts
       - name: Upload build artifact for deploy job
         uses: actions/upload-artifact@v4
         with:
