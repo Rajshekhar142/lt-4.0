@@ -25,7 +25,7 @@ function median(nums: number[]): number {
 }
 
 // avg_frr is a 0-1 fraction (frr stored as 0/1 per session) — interpolate
-// from the Learner blue (low friction) to an amber/orange (high friction).
+// from the Learner blue (low friction) to an amber/orange (high friction)
 function frrColor(avgFrr: number | null): string {
   if (avgFrr === null) return "#6c8ae4";
   const t = Math.max(0, Math.min(1, avgFrr));
