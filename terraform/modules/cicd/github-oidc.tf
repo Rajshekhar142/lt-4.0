@@ -13,7 +13,7 @@ resource "aws_iam_openid_connect_provider" "github" {
 data "aws_iam_policy_document" "github_deploy_trust" {
   statement {
     effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
+    actions = ["sts:AssumeRoleWithWebIdentity", "sts:TagSession"]
 
     principals {
       type        = "Federated"
