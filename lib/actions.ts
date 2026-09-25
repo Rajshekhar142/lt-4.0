@@ -86,6 +86,17 @@ export async function setFlowMetaAction(
   return entry;
 }
 
+export async function setEntryAccuracyAction(
+  entryId: number,
+  attempted: number | null,
+  correct: number | null
+) {
+  const entry = db.setEntryAccuracy(entryId, attempted, correct);
+  revalidatePath("/");
+  revalidatePath("/history");
+  return entry;
+}
+
 export async function getHistoryAction(days: number = 30) {
   return db.getHistory(days);
 }

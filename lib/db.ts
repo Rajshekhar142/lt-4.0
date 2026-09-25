@@ -103,6 +103,16 @@ function initDb(): DatabaseSync {
     instance.exec("ALTER TABLE time_entries ADD COLUMN tag TEXT");
   }
 
+  const hasAttempted = timeEntriesColumns.some((col) => col.name === "attempted");
+  if (!hasAttempted) {
+    instance.exec("ALTER TABLE time_entries ADD COLUMN attempted INTEGER");
+  }
+
+  const hasCorrect = timeEntriesColumns.some((col) => col.name === "correct");
+  if (!hasCorrect) {
+    instance.exec("ALTER TABLE time_entries ADD COLUMN correct INTEGER");
+  }
+
   // NEW — tiny key/value store for the prime-focus text (and any other
   // one-off settings later). No need for a dedicated table per setting.
   instance.exec(`
@@ -214,6 +224,8 @@ export type TimeEntry = {
   end_reason: EndReason | null;
   flow_rating: number | null;
   tag: string | null; // NEW
+  attempted: number | null;
+  correct: number | null;
 };
 
 function toPlain<T>(value: T): T {
@@ -397,6 +409,38 @@ export function setEntryFlowMeta(
   );
 }
 
+export function setEntryAccuracy(
+  entryId: number,
+  attempted: number | null,
+  correct: number | null
+): TimeEntry {
+  const entry = db
+    .prepare("SELECT * FROM time_entries WHERE id = ?")
+    .get(entryId) as TimeEntry | undefined;
+
+  if (!entry) {
+    throw new Error(`setEntryAccuracy: no time_entries row with id ${entryId}`);
+  }
+
+  const attemptedToStore =
+    typeof attempted === "number" && attempted >= 0 ? Math.round(attempted) : null;
+  const correctToStore =
+    typeof correct === "number" &&
+    correct >= 0 &&
+    attemptedToStore !== null &&
+    correct <= attemptedToStore
+      ? Math.round(correct)
+      : null;
+
+  db.prepare(
+    "UPDATE time_entries SET attempted = ?, correct = ? WHERE id = ?"
+  ).run(attemptedToStore, correctToStore, entryId);
+
+  return toPlain(
+    db.prepare("SELECT * FROM time_entries WHERE id = ?").get(entryId) as TimeEntry
+  );
+}
+
 export function getTodayTotals(): Record<number, number> {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
@@ -546,10 +590,13 @@ export type PriorityQuadrantGroup = {
   total_seconds: number;
   session_count: number;
   avg_flow_rating: number | null;
-  completion_ratio: number;   // share ending in natural_completion
-  poa_presence_ratio: number; // share with a non-null poa
+  completion_ratio: number;
+  poa_presence_ratio: number;
   avg_frr: number | null;
   quality_score: number;      // composite, 0-1
+  attempted_total: number;    // NEW: aggregate attempted
+  correct_total: number;      // NEW: aggregate correct
+  avg_accuracy: number | null;// NEW: calculated accuracy percentage (0-1)
 };
 
 export function getPriorityQuadrant(days: number = 30): PriorityQuadrantGroup[] {
@@ -558,8 +605,9 @@ export function getPriorityQuadrant(days: number = 30): PriorityQuadrantGroup[] 
 
   const rows = db
     .prepare(
-      `SELECT te.tag, te.domain_id, d.name as domain_name, d.color as domain_color,
-              te.duration_seconds, te.flow_rating, te.end_reason, te.poa, te.frr
+            `SELECT te.tag, te.domain_id, d.name as domain_name, d.color as domain_color,
+              te.duration_seconds, te.flow_rating, te.end_reason, te.poa, te.frr,
+              te.attempted, te.correct
        FROM time_entries te JOIN domains d ON d.id = te.domain_id
        WHERE te.started_at >= ? AND te.ended_at IS NOT NULL`
     )
@@ -573,6 +621,8 @@ export function getPriorityQuadrant(days: number = 30): PriorityQuadrantGroup[] 
     end_reason: EndReason | null;
     poa: string | null;
     frr: number | null;
+    attempted: number | null; 
+    correct: number | null;
   }[];
 
   type Acc = {
@@ -586,6 +636,8 @@ export function getPriorityQuadrant(days: number = 30): PriorityQuadrantGroup[] 
     poa_count: number;
     frr_sum: number;
     frr_count: number;
+    attempted_sum: number;
+    correct_sum: number;
   };
 
   const groups = new Map<string, Acc>();
@@ -604,6 +656,8 @@ export function getPriorityQuadrant(days: number = 30): PriorityQuadrantGroup[] 
       poa_count: 0,
       frr_sum: 0,
       frr_count: 0,
+      attempted_sum: 0, // Fix: must be initialized
+      correct_sum: 0,   // Fix: must be initialized
     };
 
     acc.total_seconds += row.duration_seconds ?? 0;
@@ -611,6 +665,10 @@ export function getPriorityQuadrant(days: number = 30): PriorityQuadrantGroup[] 
     if (row.flow_rating !== null) {
       acc.flow_sum += row.flow_rating;
       acc.flow_count += 1;
+    }
+    if (row.attempted !== null && row.attempted > 0) {
+      acc.attempted_sum += row.attempted;
+      acc.correct_sum += row.correct ?? 0;
     }
     if (row.end_reason === "natural_completion") acc.completed_count += 1;
     if (row.poa !== null) acc.poa_count += 1;
@@ -628,11 +686,16 @@ export function getPriorityQuadrant(days: number = 30): PriorityQuadrantGroup[] 
     const completion_ratio = acc.completed_count / acc.session_count;
     const poa_presence_ratio = acc.poa_count / acc.session_count;
     const avg_frr = acc.frr_count > 0 ? acc.frr_sum / acc.frr_count : null;
+    const avg_accuracy = acc.attempted_sum > 0 ? acc.correct_sum / acc.attempted_sum : null;
 
     const quality_score =
-      (avg_flow_rating !== null ? avg_flow_rating / 3 : 0) * 0.5 +
-      completion_ratio * 0.3 +
-      poa_presence_ratio * 0.2;
+      avg_accuracy !== null
+        ? avg_accuracy * 0.6 +
+          (avg_flow_rating !== null ? avg_flow_rating / 3 : 0) * 0.25 +
+          completion_ratio * 0.15
+        : (avg_flow_rating !== null ? avg_flow_rating / 3 : 0) * 0.5 +
+          completion_ratio * 0.3 +
+          poa_presence_ratio * 0.2;
 
     result.push({
       key,
@@ -645,6 +708,9 @@ export function getPriorityQuadrant(days: number = 30): PriorityQuadrantGroup[] 
       poa_presence_ratio,
       avg_frr,
       quality_score,
+      attempted_total: acc.attempted_sum,
+      correct_total: acc.correct_sum,
+      avg_accuracy,
     });
   }
 
