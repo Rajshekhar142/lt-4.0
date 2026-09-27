@@ -11,9 +11,10 @@ import type { PriorityQuadrantGroup } from "@/lib/db";
 
 const WIDTH = 640;
 const HEIGHT = 460;
-const PAD = { top: 24, right: 32, bottom: 48, left: 52 };
+const PAD = { top: 28, right: 28, bottom: 44, left: 48 };
 const PLOT_W = WIDTH - PAD.left - PAD.right;
 const PLOT_H = HEIGHT - PAD.top - PAD.bottom;
+const EDGE_ZONE = 70; // px from a plot edge where label anchoring flips
 
 function median(nums: number[]): number {
   if (nums.length === 0) return 0;
@@ -34,6 +35,40 @@ function frrColor(avgFrr: number | null): string {
   const g = Math.round(from.g + (to.g - from.g) * t);
   const b = Math.round(from.b + (to.b - from.b) * t);
   return `rgb(${r}, ${g}, ${b})`;
+}
+
+// "DILR/circular-arrangement" -> "circular-arrangement" (subject stays
+// visible in the tag itself and in the hover card; the bubble only needs
+// the specific part). Long single-word tags still get trimmed.
+function shortLabel(key: string): string {
+  const parts = key.split("/");
+  const base = parts.length > 1 ? parts[parts.length - 1] : key;
+  return base.length > 16 ? base.slice(0, 15) + "…" : base;
+}
+
+// Keep every label's bounding box inside the plot area instead of letting
+// textAnchor="middle" push it past the left/right edge for points that sit
+// near either side of the chart.
+function labelAnchor(x: number): "start" | "middle" | "end" {
+  if (x < PAD.left + EDGE_ZONE) return "start";
+  if (x > PAD.left + PLOT_W - EDGE_ZONE) return "end";
+  return "middle";
+}
+
+function labelX(x: number, anchor: "start" | "middle" | "end"): number {
+  if (anchor === "start") return x + 6;
+  if (anchor === "end") return x - 6;
+  return x;
+}
+
+// Flip the label below the point instead of above when there isn't enough
+// headroom to the top edge of the plot.
+function labelY(y: number, r: number): { y: number; baseline: "auto" | "hanging" } {
+  const above = y - r - 8;
+  if (above < PAD.top + 10) {
+    return { y: y + r + 16, baseline: "hanging" };
+  }
+  return { y: above, baseline: "auto" };
 }
 
 export default function PriorityQuadrant() {
@@ -68,34 +103,57 @@ export default function PriorityQuadrant() {
     const xMax = Math.max(...xs, 1);
     const maxCount = Math.max(...groups.map((g) => g.session_count), 1);
 
-    const points = groups.map((g) => ({
-      ...g,
-      x: PAD.left + (g.total_seconds / xMax) * PLOT_W,
-      // Invert Y: 0 is at bottom (PAD.top + PLOT_H), 1 is at top (PAD.top)
-      y: PAD.top + PLOT_H - g.quality_score * PLOT_H,
-      r: Math.max(5, Math.min(22, 5 + (g.session_count / maxCount) * 15)),
-    }));
+    const points = groups.map((g) => {
+      const x = PAD.left + (g.total_seconds / xMax) * PLOT_W;
+      const y = PAD.top + PLOT_H - g.quality_score * PLOT_H;
+      const r = Math.max(5, Math.min(20, 5 + (g.session_count / maxCount) * 13));
+      const anchor = labelAnchor(x);
+      const { y: ly, baseline } = labelY(y, r);
 
-    return {
-      points,
-      xMedian: median(xs),
-      yMedian: median(ys),
-      xMax,
-    };
+      return {
+        ...g,
+        x,
+        y,
+        r,
+        label: shortLabel(g.key),
+        labelAnchor: anchor,
+        labelX: labelX(x, anchor),
+        labelY: ly,
+        labelBaseline: baseline,
+      };
+    });
+
+    return { points, xMedian: median(xs), yMedian: median(ys), xMax };
   }, [groups]);
 
   const xMedianPx = PAD.left + (xMedian / xMax) * PLOT_W;
   const yMedianPx = PAD.top + PLOT_H - yMedian * PLOT_H;
+  const hoveredPoint = points.find((p) => p.key === hovered) ?? null;
 
   return (
     <div className="mb-10 pb-8 border-b border-border">
-      <div className="flex items-start justify-between mb-4 gap-4 flex-wrap">
+      <div className="flex items-start justify-between mb-1 gap-4 flex-wrap">
         <div>
-          <h2 className="text-sm font-medium text-fg">Topic Priority & Accuracy Quadrant</h2>
+          <h2 className="text-sm font-medium text-fg">Topic priority quadrant</h2>
           <p className="text-xs text-fg-muted mt-0.5">
-            Tracking time vs. accuracy conversion over the last 30 days
+            Time invested vs. accuracy, last 30 days — hover a bubble for the full breakdown
           </p>
         </div>
+      </div>
+
+      {/* Legend — read the chart without hovering anything first */}
+      <div className="flex items-center gap-4 text-[11px] text-fg-faint mb-5 mt-2">
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#6c8ae4" }} />
+          low friction
+          <span className="inline-block h-2.5 w-2.5 rounded-full ml-1" style={{ background: "#ff8552" }} />
+          high friction
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-fg-faint" />
+          <span className="inline-block h-3 w-3 rounded-full bg-fg-faint" />
+          bubble size = session count
+        </span>
       </div>
 
       <div className="mb-6 max-w-md">
@@ -107,7 +165,7 @@ export default function PriorityQuadrant() {
             type="text"
             value={primeFocus}
             onChange={(e) => setPrimeFocus(e.target.value)}
-            placeholder="e.g. DILR - Circular Arrangement"
+            placeholder="e.g. DILR/circular-arrangement"
             className="flex-1 px-3 py-1.5 text-sm rounded-md border border-border bg-surface text-fg focus:outline-none focus:ring-1 focus:ring-fg-muted transition-colors"
           />
           <button
@@ -134,227 +192,141 @@ export default function PriorityQuadrant() {
             viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
             className="max-w-full select-none"
           >
-            {/* Background Grid Quadrant Tints */}
+            {/* Quadrant tints */}
             <rect
               x={PAD.left}
               y={PAD.top}
               width={xMedianPx - PAD.left}
               height={yMedianPx - PAD.top}
-              fill="rgba(108, 138, 228, 0.03)"
+              fill="rgba(108, 138, 228, 0.04)"
             />
             <rect
               x={xMedianPx}
               y={yMedianPx}
               width={PAD.left + PLOT_W - xMedianPx}
               height={PAD.top + PLOT_H - yMedianPx}
-              fill="rgba(255, 133, 82, 0.03)"
+              fill="rgba(255, 133, 82, 0.04)"
             />
 
-            {/* Main Axes */}
-            <line
-              x1={PAD.left}
-              y1={PAD.top + PLOT_H}
-              x2={PAD.left + PLOT_W}
-              y2={PAD.top + PLOT_H}
-              stroke="var(--border)"
-            />
-            <line
-              x1={PAD.left}
-              y1={PAD.top}
-              x2={PAD.left}
-              y2={PAD.top + PLOT_H}
-              stroke="var(--border)"
-            />
+            {/* Axes */}
+            <line x1={PAD.left} y1={PAD.top + PLOT_H} x2={PAD.left + PLOT_W} y2={PAD.top + PLOT_H} stroke="var(--border)" />
+            <line x1={PAD.left} y1={PAD.top} x2={PAD.left} y2={PAD.top + PLOT_H} stroke="var(--border)" />
 
-            {/* Median Split Crosshairs */}
-            <line
-              x1={xMedianPx}
-              y1={PAD.top}
-              x2={xMedianPx}
-              y2={PAD.top + PLOT_H}
-              stroke="var(--fg-faint)"
-              strokeDasharray="4 4"
-            />
-            <line
-              x1={PAD.left}
-              y1={yMedianPx}
-              x2={PAD.left + PLOT_W}
-              y2={yMedianPx}
-              stroke="var(--fg-faint)"
-              strokeDasharray="4 4"
-            />
+            {/* Median split */}
+            <line x1={xMedianPx} y1={PAD.top} x2={xMedianPx} y2={PAD.top + PLOT_H} stroke="var(--fg-faint)" strokeDasharray="4 4" />
+            <line x1={PAD.left} y1={yMedianPx} x2={PAD.left + PLOT_W} y2={yMedianPx} stroke="var(--fg-faint)" strokeDasharray="4 4" />
 
-            {/* Median Axis Indicators */}
-            <text
-              x={xMedianPx}
-              y={PAD.top + PLOT_H + 16}
-              textAnchor="middle"
-              className="fill-fg-faint text-[9px]"
-            >
-              med: {formatDuration(xMedian)}
+            {/* Quadrant labels — short, low-emphasis, corners only */}
+            <text x={PAD.left + PLOT_W - 6} y={PAD.top + 14} textAnchor="end" className="fill-fg-faint text-[9px] tracking-wide uppercase">
+              converted
             </text>
-            <text
-              x={PAD.left - 6}
-              y={yMedianPx + 3}
-              textAnchor="end"
-              className="fill-fg-faint text-[9px]"
-            >
-              {(yMedian * 100).toFixed(0)}%
+            <text x={PAD.left + 6} y={PAD.top + 14} textAnchor="start" className="fill-fg-faint text-[9px] tracking-wide uppercase">
+              efficient
+            </text>
+            <text x={PAD.left + PLOT_W - 6} y={PAD.top + PLOT_H - 8} textAnchor="end" className="fill-amber-500/80 text-[9px] tracking-wide uppercase">
+              time sink
+            </text>
+            <text x={PAD.left + 6} y={PAD.top + PLOT_H - 8} textAnchor="start" className="fill-fg-faint text-[9px] tracking-wide uppercase">
+              low exposure
             </text>
 
-            {/* Quadrant Functional Labels */}
-            {/* Top Right: High Time, High Accuracy */}
-            <text
-              x={PAD.left + PLOT_W - 6}
-              y={PAD.top + 16}
-              textAnchor="end"
-              className="fill-fg-faint text-[10px] font-medium tracking-wide uppercase"
-            >
-              Reinforcing / Converted
-            </text>
-            {/* Top Left: Low Time, High Accuracy */}
-            <text
-              x={PAD.left + 8}
-              y={PAD.top + 16}
-              textAnchor="start"
-              className="fill-fg-faint text-[10px] font-medium tracking-wide uppercase"
-            >
-              Efficient / Low Drag
-            </text>
-            {/* Bottom Right: High Time, Low Accuracy */}
-            <text
-              x={PAD.left + PLOT_W - 6}
-              y={PAD.top + PLOT_H - 10}
-              textAnchor="end"
-              className="fill-amber-500/80 text-[10px] font-medium tracking-wide uppercase"
-            >
-              Time Sink / Bottleneck
-            </text>
-            {/* Bottom Left: Low Time, Low Accuracy */}
-            <text
-              x={PAD.left + 8}
-              y={PAD.top + PLOT_H - 10}
-              textAnchor="start"
-              className="fill-fg-faint text-[10px] font-medium tracking-wide uppercase"
-            >
-              Low Exposure
-            </text>
-
-            {/* Axis Domain Labels */}
-            <text
-              x={PAD.left + PLOT_W / 2}
-              y={HEIGHT - 10}
-              textAnchor="middle"
-              className="fill-fg-muted text-[11px] font-medium"
-            >
-              Time Invested →
+            {/* Axis titles */}
+            <text x={PAD.left + PLOT_W / 2} y={HEIGHT - 8} textAnchor="middle" className="fill-fg-muted text-[11px] font-medium">
+              time invested →
             </text>
             <text
-              x={16}
+              x={14}
               y={PAD.top + PLOT_H / 2}
               textAnchor="middle"
-              transform={`rotate(-90 16 ${PAD.top + PLOT_H / 2})`}
+              transform={`rotate(-90 14 ${PAD.top + PLOT_H / 2})`}
               className="fill-fg-muted text-[11px] font-medium"
             >
-              Accuracy / Quality Index ↑
+              accuracy / quality ↑
             </text>
 
-            {/* Data Points */}
+            {/* Points */}
             {points.map((p) => {
               const isSelected = hovered === p.key;
-              const hasDimming = hovered !== null && !isSelected;
+              const dimmed = hovered !== null && !isSelected;
 
               return (
                 <g
                   key={p.key}
                   onMouseEnter={() => setHovered(p.key)}
                   onMouseLeave={() => setHovered(null)}
-                  className="cursor-pointer transition-transform"
+                  className="cursor-pointer"
                 >
                   <circle
                     cx={p.x}
                     cy={p.y}
                     r={p.r}
                     fill={frrColor(p.avg_frr)}
-                    fillOpacity={hasDimming ? 0.2 : 0.85}
+                    fillOpacity={dimmed ? 0.18 : 0.85}
                     stroke="var(--surface)"
                     strokeWidth={isSelected ? 2.5 : 1.5}
                   />
                   <text
-                    x={p.x}
-                    y={p.y - p.r - 6}
-                    textAnchor="middle"
-                    className="fill-fg text-[11px] font-mono select-none pointer-events-none"
-                    opacity={hasDimming ? 0.2 : 1}
+                    x={p.labelX}
+                    y={p.labelY}
+                    textAnchor={p.labelAnchor}
+                    dominantBaseline={p.labelBaseline}
+                    className="fill-fg text-[10px] font-mono pointer-events-none"
+                    opacity={dimmed ? 0.15 : 1}
                   >
-                    {p.key}
+                    {p.label}
                   </text>
                 </g>
               );
             })}
           </svg>
 
-          {/* Interactive Inspection Card */}
-          {hovered && (
-            <div className="mt-4 p-3 bg-surface rounded-md border border-border inline-block min-w-[340px] text-xs">
-              {(() => {
-                const g = points.find((p) => p.key === hovered)!;
-                const hasAccuracyData = g.attempted_total > 0;
-                return (
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-4 border-b border-border pb-1.5">
-                      <span className="font-semibold text-fg text-sm">{g.key}</span>
-                      <span className="text-fg-muted font-mono">{formatDuration(g.total_seconds)}</span>
-                    </div>
+          {/* Fixed-height detail slot — always reserved, so hovering never
+              shifts layout, and it never needs to compete for space with
+              the chart itself. */}
+          <div className="mt-4 min-h-[92px]">
+            {hoveredPoint ? (
+              <div className="p-3 bg-surface rounded-md border border-border text-xs max-w-md">
+                <div className="flex items-center justify-between gap-4 border-b border-border pb-1.5">
+                  <span className="font-semibold text-fg text-sm">{hoveredPoint.key}</span>
+                  <span className="text-fg-muted font-mono">{formatDuration(hoveredPoint.total_seconds)}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-fg-muted pt-1.5">
+                  <div>Sessions: <span className="text-fg font-medium">{hoveredPoint.session_count}</span></div>
+                  <div>Composite: <span className="text-fg font-medium">{(hoveredPoint.quality_score * 100).toFixed(0)}%</span></div>
 
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-fg-muted pt-0.5">
+                  {hoveredPoint.attempted_total > 0 ? (
+                    <>
                       <div>
-                        Sessions: <span className="text-fg font-medium">{g.session_count}</span>
+                        Accuracy:{" "}
+                        <span className="text-fg font-medium">
+                          {((hoveredPoint.correct_total / hoveredPoint.attempted_total) * 100).toFixed(1)}%
+                        </span>
                       </div>
                       <div>
-                        Composite Score:{" "}
-                        <span className="text-fg font-medium">{(g.quality_score * 100).toFixed(0)}%</span>
+                        Breakdown:{" "}
+                        <span className="text-fg font-medium">
+                          {hoveredPoint.correct_total}/{hoveredPoint.attempted_total}
+                        </span>
                       </div>
-
-                      {hasAccuracyData ? (
-                        <>
-                          <div>
-                            Accuracy:{" "}
-                            <span className="text-fg font-medium">
-                              {((g.correct_total / g.attempted_total) * 100).toFixed(1)}%
-                            </span>
-                          </div>
-                          <div>
-                            Breakdown:{" "}
-                            <span className="text-fg font-medium">
-                              {g.correct_total}/{g.attempted_total} correct
-                            </span>
-                          </div>
-                        </>
-                      ) : (
-                        <div className="col-span-2 text-fg-faint italic">
-                          No question attempts logged (scores purely on flow/completion)
-                        </div>
-                      )}
-
-                      {g.avg_flow_rating !== null && (
-                        <div>
-                          Avg Flow:{" "}
-                          <span className="text-fg font-medium">{g.avg_flow_rating.toFixed(1)} / 3</span>
-                        </div>
-                      )}
-                      {g.avg_frr !== null && (
-                        <div>
-                          Avg FRR:{" "}
-                          <span className="text-fg font-medium">{(g.avg_frr * 100).toFixed(0)}%</span>
-                        </div>
-                      )}
+                    </>
+                  ) : (
+                    <div className="col-span-2 text-fg-faint italic">
+                      No question attempts logged — scored on flow/completion only
                     </div>
-                  </div>
-                );
-              })()}
-            </div>
-          )}
+                  )}
+
+                  {hoveredPoint.avg_flow_rating !== null && (
+                    <div>Flow: <span className="text-fg font-medium">{hoveredPoint.avg_flow_rating.toFixed(1)}/3</span></div>
+                  )}
+                  {hoveredPoint.avg_frr !== null && (
+                    <div>FRR: <span className="text-fg font-medium">{(hoveredPoint.avg_frr * 100).toFixed(0)}%</span></div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-fg-faint italic pt-2">Hover a bubble for the full breakdown.</p>
+            )}
+          </div>
         </div>
       )}
     </div>
