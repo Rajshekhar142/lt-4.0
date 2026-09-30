@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition, useRef } from "react";
 import {
   startEntryAction,
   stopEntryAction,
@@ -54,6 +54,17 @@ export default function TrackerClient({
     null
   );
   const [pendingFlowRating, setPendingFlowRating] = useState(0);
+
+
+  const [capSeconds, setCapSeconds] = useState<number | null>(null);
+  const [capHit, setCapHit] = useState(false);
+  const [showCapPicker, setShowCapPicker] = useState(false);
+  const [capH, setCapH] = useState(0);
+  const [capM, setCapM] = useState(0);
+  const [capS, setCapS] = useState(0);
+
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const alarmIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   function startWrapup(entryId: number, domainName: string, domainColor: string) {
     const poaEligible = POA_FRR_DOMAINS.includes(domainName);
@@ -129,6 +140,9 @@ function handleToggle(domain: Domain) {
         setDescription("");
         setFrrOn(false);
         setTagText("");   // NEW
+        stopAlarm();
+        setCapSeconds(null);
+        setCapH(0); setCapM(0); setCapS(0);
         startWrapup(stopped.id, domain.name, domain.color);
         // ───────── end SPOT 1 ─────────
       } else {
@@ -152,6 +166,9 @@ function handleToggle(domain: Domain) {
           setDescription("");
           setFrrOn(false);
           setTagText("");   // NEW
+          stopAlarm();
+          setCapSeconds(null);
+          setCapH(0); setCapM(0); setCapS(0);
           if (prevDomain) {
             startWrapup(stopped.id, prevDomain.name, prevDomain.color);
           }
@@ -163,11 +180,104 @@ function handleToggle(domain: Domain) {
     });
   }
 
+  function beep() {
+  const ctx = audioCtxRef.current;
+  if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.frequency.value = 880;
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  gain.gain.setValueAtTime(0.001, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.3);
+}
+
+function triggerAlarm() {
+  setCapHit(true);
+  if (!audioCtxRef.current) {
+    audioCtxRef.current = new AudioContext();
+  }
+  beep();
+  alarmIntervalRef.current = setInterval(beep, 600);
+  if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+    new Notification("Time's up", { body: "Cap reached — solving continues, alarm is on you now." });
+  }
+}
+
+function stopAlarm() {
+  if (alarmIntervalRef.current) {
+    clearInterval(alarmIntervalRef.current);
+    alarmIntervalRef.current = null;
+  }
+  if (audioCtxRef.current) {
+    audioCtxRef.current.close().catch(() => {});
+    audioCtxRef.current = null;
+  }
+  setCapHit(false);
+  setCapSeconds(null);
+  setCapH(0);
+  setCapM(0);
+  setCapS(0);
+}
+
+function saveCap() {
+  const total = capH * 3600 + capM * 60 + capS;
+  if (total > 0) {
+    setCapSeconds(total);
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }
+  setShowCapPicker(false);
+}
+
+useEffect(() => {
+  document.title = active ? formatDuration(liveElapsed) : "LifeTracker";
+}, [active, liveElapsed]);
+
+useEffect(() => {
+  if (!capHit) {
+    document.title = active ? formatDuration(liveElapsed) : "LifeTracker";
+    return;
+  }
+  const id = setInterval(() => {
+    document.title = document.title === "TIME'S UP" ? formatDuration(liveElapsed) : "TIME'S UP";
+  }, 700);
+  return () => clearInterval(id);
+}, [active, liveElapsed, capHit]);
+
+
+useEffect(() => {
+  if (!active || capSeconds === null || capHit) return;
+  const started = new Date(active.started_at).getTime();
+  const msRemaining = started + capSeconds * 1000 - Date.now();
+  if (msRemaining <= 0) {
+    triggerAlarm();
+    return;
+  }
+  const id = setTimeout(triggerAlarm, msRemaining);
+  return () => clearTimeout(id);
+}, [active, capSeconds, capHit]);
+
+useEffect(() => {
+  function onVisible() {
+    if (document.visibilityState !== "visible" || !active || capSeconds === null || capHit) return;
+    const started = new Date(active.started_at).getTime();
+    if (Date.now() >= started + capSeconds * 1000) triggerAlarm();
+  }
+  document.addEventListener("visibilitychange", onVisible);
+  return () => document.removeEventListener("visibilitychange", onVisible);
+}, [active, capSeconds, capHit]);
+
   return (
     <div className="space-y-8">
       {/* Hero: Live readout & note input */}
       <div className="text-center py-6">
         <div
+          suppressHydrationWarning
           className="font-mono text-6xl sm:text-7xl tabular tracking-tight transition-colors"
           style={{ color: active ? activeDomain?.color : "var(--fg-faint)" }}
         >
@@ -201,6 +311,60 @@ function handleToggle(domain: Domain) {
             placeholder="tag (e.g. dsa, chess-endgames, eks-setup)"
             className="w-full px-4 py-2 text-sm rounded-md border border-border bg-surface text-fg-muted focus:outline-none focus:ring-1 focus:ring-fg-muted transition-colors"
     />
+
+    {capSeconds === null && !showCapPicker && (
+      <button
+        type="button"
+        onClick={() => setShowCapPicker(true)}
+        className="text-xs text-fg-faint hover:text-fg-muted underline underline-offset-2"
+      >
+        set timer
+      </button>
+    )}
+
+    {showCapPicker && (
+      <div className="flex items-center gap-2 justify-center">
+        {[["h", capH, setCapH, 23], ["m", capM, setCapM, 59], ["s", capS, setCapS, 59]].map(
+          ([label, val, setter, max]: any) => (
+            <div key={label} className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                max={max}
+                value={val}
+                onChange={(e) => setter(Math.max(0, Math.min(max, Number(e.target.value))))}
+                className="w-14 px-2 py-1 text-sm rounded-md border border-border bg-surface text-fg text-center"
+              />
+              <span className="text-xs text-fg-faint">{label}</span>
+            </div>
+          )
+        )}
+        <button onClick={saveCap} className="px-3 py-1.5 rounded-md border border-border bg-surface hover:bg-surface-hover text-xs font-medium">
+          Save
+        </button>
+        <button onClick={() => setShowCapPicker(false)} className="text-xs text-fg-faint hover:text-fg-muted">
+          cancel
+        </button>
+      </div>
+    )}
+
+    {capSeconds !== null && (
+      <div className={`text-xs ${capHit ? "text-amber-500 font-semibold" : "text-fg-faint"}`}>
+        cap: {formatDuration(capSeconds)}{capHit ? " — time's up" : ""}
+      </div>
+    )}
+
+    {capHit && (
+      <div className="flex items-center justify-center gap-3 rounded-md border border-amber-400 bg-amber-400/10 px-4 py-2">
+        <span className="text-sm font-medium text-amber-600">⏰ Time's up</span>
+        <button
+          onClick={stopAlarm}
+          className="px-3 py-1 rounded-md bg-amber-400 text-amber-950 text-xs font-semibold"
+        >
+          Stop alarm
+        </button>
+      </div>
+    )}
 
             {POA_FRR_DOMAINS.includes(activeDomain?.name ?? "") && (
               <button
@@ -366,7 +530,7 @@ function handleToggle(domain: Domain) {
                 <span className="font-medium">{domain.name}</span>
               </span>
               <span className="flex items-center gap-4">
-                <span className="font-mono tabular text-sm text-fg-muted">
+                <span suppressHydrationWarning className="font-mono tabular text-sm text-fg-muted">
                   {formatDuration(total)}
                 </span>
                 <span className="text-xs text-fg-faint w-10 text-right">
