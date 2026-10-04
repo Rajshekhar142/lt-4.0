@@ -1,30 +1,53 @@
 name: CI/CD
+
 on:
   push:
     branches: [tdevops]
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
+
       - name: Set up Node 22
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Use npm 11.6.2
-        run: npm install -g npm@11.6.2
-      - name: Install dependencies
-        run: npm ci
-      - name: Build (this is the actual check — fails on type errors, bad imports, etc.)
-        run: npm run build
+          cache: "npm"
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to EC2 via SSH
+      - name: Install dependencies on CI runner
+        run: npm ci
+
+      - name: Build Next.js app
+        run: npm run build
+        env:
+          # If your build reads public/server env vars, pass them here or via secrets
+          NODE_ENV: production
+
+      # Package only the minimal standalone runtime artifacts
+      # (standalone contains a minimal node_modules and server.js)
+      - name: Package standalone build
+        run: |
+          mkdir -p deploy-package
+          cp -r .next/standalone/* deploy-package/
+          cp -r .next/static deploy-package/.next/static
+          if [ -d "public" ]; then cp -r public deploy-package/public; fi
+          tar -czf deploy.tar.gz -C deploy-package .
+
+      # Transfer archive directly to EC2 via SCP
+      - name: Copy bundle to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "deploy.tar.gz"
+          target: "~/lt-4.0"
+
+      # Extract and execute PM2 reload on EC2 (uses virtually zero RAM)
+      - name: Deploy on EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -34,17 +57,10 @@ jobs:
             set -e
             cd ~/lt-4.0
 
-            # Wipe uncommitted changes (fixes package-lock.json drift)
-            git reset --hard HEAD
-            # Clean untracked generated files
-            git clean -fd
+            # Extract over existing files without running npm or build
+            tar -xzf deploy.tar.gz
+            rm -f deploy.tar.gz
 
-            # Pull remote changes (which deletes vault/vault.js)
-            git pull origin tdevops
-
-            # Clean install using the exact repo lockfile
-            npm ci || npm install
-
-            pm2 stop lifetracker || true
-            npm run build
-            pm2 restart lifetracker
+            # Restart PM2 using the standalone server
+            # Adjust process name and script path as needed (usually server.js)
+            pm2 startOrReload ecosystem.config.js || pm2 restart lifetracker --update-env
