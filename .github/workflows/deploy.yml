@@ -3,10 +3,25 @@ name: CI/CD
 on:
   push:
     branches: [tdevops]
+  workflow_dispatch:
+
+# Latest commit always wins:
+# - only one deploy runs at a time (never two writing to the server at once)
+# - if several pushes arrive while one is deploying, GitHub keeps only the
+#   NEWEST pending run and drops the older ones
+# - cancel-in-progress is false so a deploy that is already extracting/reloading
+#   on EC2 is never killed halfway (that would leave a half-updated server)
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -15,7 +30,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: "npm"
+          cache: npm
 
       - name: Install dependencies on CI runner
         run: npm ci
@@ -24,33 +39,29 @@ jobs:
         run: npm run build
         env:
           NODE_ENV: production
+          NEXT_TELEMETRY_DISABLED: 1
 
       - name: Package standalone build
         run: |
-          # 1. Clean any old artifacts
+          set -e
           rm -rf deploy-package deploy.tar.gz
+          mkdir -p deploy-package
 
-          # 2. Create target directory tree
-          mkdir -p deploy-package/.next
+          # Copy the WHOLE standalone folder, including hidden .next/ (server code).
+          # "cp -r standalone/*" skips dotfolders, so use "/." instead.
+          cp -a .next/standalone/. deploy-package/
 
-          # 3. Copy standalone server and minimal dependencies
-          cp -r .next/standalone/* deploy-package/
+          # Static chunks are not included in standalone output
+          mkdir -p deploy-package/.next/static
+          cp -a .next/static/. deploy-package/.next/static/
 
-          # 4. Copy static frontend chunks into .next/static
-          cp -r .next/static deploy-package/.next/
+          # Optional files
+          if [ -d public ]; then cp -a public deploy-package/; fi
+          if [ -f ecosystem.config.js ]; then cp ecosystem.config.js deploy-package/; fi
 
-          # 5. Copy public folder if it exists
-          if [ -d "public" ]; then
-            cp -r public deploy-package/
-          fi
-
-          # 6. Copy ecosystem config if it exists
-          if [ -f "ecosystem.config.js" ]; then
-            cp ecosystem.config.js deploy-package/
-          fi
-
-          # 7. Compress bundle
+          # Compress bundle
           tar -czf deploy.tar.gz -C deploy-package .
+          ls -lh deploy.tar.gz
 
       - name: Copy bundle to EC2
         uses: appleboy/scp-action@v0.1.7
@@ -58,8 +69,9 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: "deploy.tar.gz"
-          target: "~/lt-4.0"
+          source: deploy.tar.gz
+          target: /home/${{ secrets.EC2_USER }}/lt-4.0
+          overwrite: true
 
       - name: Deploy on EC2
         uses: appleboy/ssh-action@v1.0.3
@@ -67,13 +79,16 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
           script: |
             set -e
             cd ~/lt-4.0
 
-            # Extract over existing files without running npm or build
+            # Extract over existing files: no npm, no build on the instance.
+            # Files not in the bundle (your .env, SQLite db) are left untouched.
             tar -xzf deploy.tar.gz
             rm -f deploy.tar.gz
 
-            # Reload PM2 cleanly using the standalone server
-            pm2 startOrReload ecosystem.config.js || pm2 restart lifetracker --update-env
+            # Start or reload with the new code
+            pm2 startOrReload ecosystem.config.js --update-env || pm2 restart lifetracker --update-env
+            pm2 save
