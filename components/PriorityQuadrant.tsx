@@ -24,7 +24,7 @@ function median(nums: number[]): number {
     : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-// Color coding based on drill phase/type; falls back to friction rating
+// Color coding based on drill phase/type falls back to friction rating
 function getPointColor(key: string, avgFrr: number | null): string {
   const lower = key.toLowerCase();
   if (lower.includes("phase1")) return "#38bdf8"; // sky blue
