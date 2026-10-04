@@ -23,20 +23,35 @@ jobs:
       - name: Build Next.js app
         run: npm run build
         env:
-          # If your build reads public/server env vars, pass them here or via secrets
           NODE_ENV: production
 
-      # Package only the minimal standalone runtime artifacts
-      # (standalone contains a minimal node_modules and server.js)
       - name: Package standalone build
         run: |
-          mkdir -p deploy-package
+          # 1. Clean any old artifacts
+          rm -rf deploy-package deploy.tar.gz
+
+          # 2. Create target directory tree
+          mkdir -p deploy-package/.next
+
+          # 3. Copy standalone server and minimal dependencies
           cp -r .next/standalone/* deploy-package/
-          cp -r .next/static deploy-package/.next/static
-          if [ -d "public" ]; then cp -r public deploy-package/public; fi
+
+          # 4. Copy static frontend chunks into .next/static
+          cp -r .next/static deploy-package/.next/
+
+          # 5. Copy public folder if it exists
+          if [ -d "public" ]; then
+            cp -r public deploy-package/
+          fi
+
+          # 6. Copy ecosystem config if it exists
+          if [ -f "ecosystem.config.js" ]; then
+            cp ecosystem.config.js deploy-package/
+          fi
+
+          # 7. Compress bundle
           tar -czf deploy.tar.gz -C deploy-package .
 
-      # Transfer archive directly to EC2 via SCP
       - name: Copy bundle to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -46,7 +61,6 @@ jobs:
           source: "deploy.tar.gz"
           target: "~/lt-4.0"
 
-      # Extract and execute PM2 reload on EC2 (uses virtually zero RAM)
       - name: Deploy on EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -61,6 +75,5 @@ jobs:
             tar -xzf deploy.tar.gz
             rm -f deploy.tar.gz
 
-            # Restart PM2 using the standalone server
-            # Adjust process name and script path as needed (usually server.js)
+            # Reload PM2 cleanly using the standalone server
             pm2 startOrReload ecosystem.config.js || pm2 restart lifetracker --update-env
