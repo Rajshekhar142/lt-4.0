@@ -731,3 +731,5 @@ export function setPrimeFocus(text: string | null): void {
     "INSERT INTO settings (key, value) VALUES ('prime_focus', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).run(value);
 }
+
+export { db };

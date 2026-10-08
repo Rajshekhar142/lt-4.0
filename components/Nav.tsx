@@ -7,6 +7,7 @@ import { logoutAction } from "@/lib/actions";
 const links = [
   { href: "/", label: "Today" },
   { href: "/history", label: "History" },
+  { href: "/analytics", label: "Analytics"}
 ];
 
 export default function Nav() {
