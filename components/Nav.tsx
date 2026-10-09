@@ -7,7 +7,8 @@ import { logoutAction } from "@/lib/actions";
 const links = [
   { href: "/", label: "Today" },
   { href: "/history", label: "History" },
-  { href: "/analytics", label: "Analytics"}
+  { href: "/analytics", label: "Analytics"},
+  { href: "/flashcards", label: "Flashcards"}
 ];
 
 export default function Nav() {
